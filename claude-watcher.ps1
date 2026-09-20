@@ -2,7 +2,7 @@
 # Format del JSON: { "model": "claude-sonnet-5", "effort": "medium", "prompt": "..." }
 # Resultat: <nom>.md (resposta), <nom>.err (stderr), <nom>.json.done (feina consumida)
 # Ús: .\claude-watcher.ps1 [-Force]
-#   -Force  Fa servir el directori de cua encara que ja existeixi i no estigui buit.
+#   -Force  Arrenca encara que hi hagi feines pendents (*.json) a la cua i les processa.
 param(
   [switch]$Force
 )
@@ -21,13 +21,16 @@ if (-not (Test-Path -LiteralPath $q -PathType Container)) {
   Write-Host "Creat el directori de cua $q"
 }
 else {
-  $existing = @(Get-ChildItem -LiteralPath $q -Force)
-  if ($existing.Count -gt 0) {
+  # Només compten les feines pendents (*.json). L'històric (*.json.done, *.md, *.err) es conserva.
+  $pending = @(Get-ChildItem -LiteralPath $q -File | Where-Object { $_.Extension -eq '.json' })
+  $done    = @(Get-ChildItem -LiteralPath $q -File | Where-Object { $_.Name -like '*.json.done' })
+  Write-Host "Cua $q : $($done.Count) feines fetes, $($pending.Count) pendents"
+  if ($pending.Count -gt 0) {
     if ($Force) {
-      Write-Warning "El directori $q ja existeix i no està buit ($($existing.Count) elements). Es fa servir igualment per -Force."
+      Write-Warning "Hi ha $($pending.Count) feines pendents ($($pending.Name -join ', ')). S'executaran ara per -Force."
     }
     else {
-      Write-Warning "El directori $q ja existeix i no està buit ($($existing.Count) elements). Buida'l o executa l'script amb -Force."
+      Write-Warning "Hi ha $($pending.Count) feines pendents ($($pending.Name -join ', ')). Revisa-les i executa l'script amb -Force per processar-les, o esborra-les."
       exit 1
     }
   }

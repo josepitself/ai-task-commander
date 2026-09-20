@@ -19,7 +19,7 @@ Els dos funcionen igual: només canvien la CLI, el directori de cua i els valors
 
 ```powershell
 .\gpt-watcher.ps1               # arrencada normal
-.\gpt-watcher.ps1 -Force        # accepta un directori de cua que ja tingui contingut
+.\gpt-watcher.ps1 -Force        # arrenca encara que hi hagi feines pendents i les processa
 
 .\claude-watcher.ps1
 .\claude-watcher.ps1 -Force
@@ -52,13 +52,13 @@ Cada watcher té la seva ruta fixa (variable `$q` dins l'script). En arrencar fa
 | Estat de la ruta | Comportament |
 |---|---|
 | No existeix | Es crea el directori i s'arrenca el watcher. |
-| Existeix i és buit | S'arrenca el watcher. |
-| Existeix i no és buit | Avís i sortida amb codi `1`. Amb `-Force` es mostra l'avís però s'arrenca igualment. |
+| Existeix sense feines pendents | Mostra el recompte de feines fetes i pendents i s'arrenca el watcher. |
+| Existeix amb feines pendents | Avís amb els noms dels `.json` pendents i sortida amb codi `1`. Amb `-Force` es mostra l'avís, s'arrenca i es processen. |
 | Existeix però és un fitxer | Error i sortida amb codi `1`. |
 
-Els fitxers ocults també compten com a contingut. Cap directori existent no s'esborra ni se sobreescriu mai.
+Només compten com a pendents els fitxers `*.json`. L'històric (`*.json.done`, `*.md`, `*.err`) es conserva al directori i no bloqueja l'arrencada, així es pot revisar més tard. Cap directori existent no s'esborra ni se sobreescriu mai.
 
-Nota: els resultats de les feines (`.md`, `.err`, `.json.done`) es queden dins la cua. Per tant, després de la primera feina, tornar a arrencar el watcher requereix `-Force` o buidar el directori abans.
+La comprovació de pendents evita executar per error feines antigues que s'havien quedat a la cua. Si són vàlides, arrenca amb `-Force` i es processaran per ordre.
 
 ## Format d'una feina
 
