@@ -80,6 +80,8 @@ Un fitxer `<nom>.json` dins la cua, codificat en UTF-8:
 
 Les feines es processen per ordre de data de modificació, cada 5 segons. La CLI s'executa amb el directori de treball `C:\Claude\HomeAssistant`.
 
+Per cada feina el watcher mostra dues línies en pantalla, amb hora: `Inici feina <nom> (model/effort)` en començar i `Fi feina <nom> (...)` en acabar, amb la durada, el codi de sortida de la CLI i un avís si `<nom>.err` no és buit. Així es pot seguir el progrés sense mirar la cua.
+
 `claude-watcher.ps1` crida `claude -p` (mode no interactiu). En aquest mode, les eines que necessitarien confirmació es deneguen; si la feina ha de modificar fitxers, cal configurar els permisos a la `settings.json` del directori de treball.
 
 ## Fitxers de sortida

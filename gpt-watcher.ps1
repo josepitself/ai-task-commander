@@ -41,11 +41,19 @@ while ($true) {
   Get-ChildItem "$q\*.json" | Sort-Object LastWriteTime | ForEach-Object {
     $job = Get-Content $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
     $base = $_.BaseName
-    Write-Host "[$(Get-Date -Format HH:mm:ss)] $base -> $($job.model)/$($job.effort)"
+    Write-Host "[$(Get-Date -Format HH:mm:ss)] Inici feina $base ($($job.model)/$($job.effort))"
+    $exitCode = $null
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
     codex exec --skip-git-repo-check --model $job.model --cd 'C:\Claude\HomeAssistant' `
       -o "$q\$base.md" -c "model_reasoning_effort=`"$($job.effort)`"" -c 'model_reasoning_summary="none"' `
       $job.prompt 2> "$q\$base.err" | Out-Null
+    $exitCode = $LASTEXITCODE
+    $sw.Stop()
     Rename-Item $_.FullName "$($_.FullName).done"
+    $errSize = (Get-Item -LiteralPath "$q\$base.err" -ErrorAction SilentlyContinue).Length
+    $estat = "codi de sortida $exitCode"
+    if ($errSize -gt 0) { $estat += ", revisa $base.err" }
+    Write-Host "[$(Get-Date -Format HH:mm:ss)] Fi feina $base ($($sw.Elapsed.TotalSeconds.ToString('N1')) s, $estat) -> $base.md"
   }
   Start-Sleep -Seconds 5
 }
