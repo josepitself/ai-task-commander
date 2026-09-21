@@ -38,10 +38,34 @@ else {
 
 # --- Bucle de vigilància ----------------------------------------------------
 Write-Host "Vigilant $q (Ctrl+C per aturar)"
+# Feines invàlides ja avisades (ruta + data de modificació). Es tornen a provar si el fitxer canvia.
+$invalid = @{}
 while ($true) {
   Get-ChildItem "$q\*.json" | Sort-Object LastWriteTime | ForEach-Object {
-    $job = Get-Content $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-    $base = $_.BaseName
+    $file = $_
+    $base = $file.BaseName
+    $stamp = "$($file.FullName)|$($file.LastWriteTimeUtc.Ticks)"
+    if ($invalid.ContainsKey($stamp)) { return }
+
+    # Un JSON invàlid (o a mig escriure) no atura el watcher: s'avisa un cop i s'ignora fins que canviï.
+    $job = $null
+    $motiu = $null
+    try {
+      $job = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+      $motiu = "no és JSON vàlid ($($_.Exception.Message))"
+    }
+    if ($null -eq $motiu) {
+      if ($null -eq $job) { $motiu = "el fitxer és buit" }
+      elseif (-not $job.model -or -not $job.effort -or -not $job.prompt) { $motiu = "falten els camps model, effort o prompt" }
+    }
+    if ($null -ne $motiu) {
+      Write-Host "[$(Get-Date -Format HH:mm:ss)] ERROR feina $base ignorada: $motiu" -ForegroundColor Red
+      $invalid[$stamp] = $true
+      return
+    }
+
     Write-Host "[$(Get-Date -Format HH:mm:ss)] Inici feina $base ($($job.model)/$($job.effort))"
     $exitCode = $null
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -56,7 +80,7 @@ while ($true) {
       Pop-Location
     }
     $sw.Stop()
-    Rename-Item $_.FullName "$($_.FullName).done"
+    Rename-Item -LiteralPath $file.FullName "$($file.FullName).done"
     $errSize = (Get-Item -LiteralPath "$q\$base.err" -ErrorAction SilentlyContinue).Length
     $estat = "codi de sortida $exitCode"
     if ($errSize -gt 0) { $estat += ", revisa $base.err" }

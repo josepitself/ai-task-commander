@@ -82,6 +82,8 @@ Les feines es processen per ordre de data de modificació, cada 5 segons. La CLI
 
 Per cada feina el watcher mostra dues línies en pantalla, amb hora: `Inici feina <nom> (model/effort)` en començar i `Fi feina <nom> (...)` en acabar, amb la durada, el codi de sortida de la CLI i un avís si `<nom>.err` no és buit. Així es pot seguir el progrés sense mirar la cua.
 
+Si un `<nom>.json` no és JSON vàlid, és buit o li falta algun dels camps `model`, `effort` o `prompt`, el watcher mostra una línia d'error en pantalla (`ERROR feina <nom> ignorada: ...`) i el salta sense aturar-se ni reanomenar-lo. El fitxer es queda a la cua i només es torna a provar si es modifica, així no es repeteix l'avís cada 5 segons. Un fitxer que encara s'està escrivint pot provocar un avís puntual i es processa igualment quan l'escriptura acaba.
+
 `claude-watcher.ps1` crida `claude -p` (mode no interactiu). En aquest mode, les eines que necessitarien confirmació es deneguen; si la feina ha de modificar fitxers, cal configurar els permisos a la `settings.json` del directori de treball.
 
 ## Fitxers de sortida
