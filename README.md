@@ -95,9 +95,12 @@ En arrencar, el watcher fa aquestes comprovacions sobre el directori de cua:
 | No existeix | Es crea el directori i s'arrenca el watcher. |
 | Existeix sense feines pendents | Mostra el recompte de feines fetes i pendents i s'arrenca el watcher. |
 | Existeix amb feines pendents | Avís amb els noms dels `.json` pendents i sortida amb codi `1`. Amb `-Force`/`--force` es mostra l'avís, s'arrenca i es processen. |
+| Existeix amb `.json` que no són feines | Avís per cada fitxer (`El fitxer <nom> no és una feina (...): s'ignora`), no compten com a pendents i no bloquegen l'arrencada. |
 | Existeix però és un fitxer | Error i sortida amb codi `1`. |
 
-Només compten com a pendents els fitxers `*.json`. L'històric (`*.json.done`, `*.md`, `*.err`) es conserva al directori i no bloqueja l'arrencada, així es pot revisar més tard. Cap directori existent no s'esborra ni se sobreescriu mai.
+Només compten com a pendents els fitxers `*.json` que són feines vàlides (JSON correcte amb `model`, `effort` i `prompt`). L'històric (`*.json.done`, `*.md`, `*.err`) es conserva al directori i no bloqueja l'arrencada, així es pot revisar més tard. Cap directori existent no s'esborra ni se sobreescriu mai.
+
+**Contracte de la cua:** el directori de cua només conté feines i el seu històric. Els fitxers que la feina necessiti (dades, diffs, prompts llargs) van a un altre lloc dins del directori de treball, o a la cua només si no tenen extensió `.json`. Un `.json` que no és una feina (per exemple un fitxer de dades deixat a la cua per error) no atura el watcher: s'avisa un cop i s'ignora, tant a l'arrencada com durant la vigilància. Aquesta tolerància és una xarxa de seguretat, no una invitació a guardar-hi dades.
 
 La comprovació de pendents evita executar per error feines antigues que s'havien quedat a la cua. Si són vàlides, arrenca amb `-Force`/`--force` i es processaran per ordre.
 
@@ -121,7 +124,7 @@ Un fitxer `<nom>.json` dins la cua, codificat en UTF-8:
 
 Les feines es processen per ordre de data de modificació, cada 5 segons. La CLI s'executa amb el directori de treball indicat a `-WorkDir`/`--workdir`. El prompt s'envia a la CLI per l'entrada estàndard, no per la línia d'ordres, així no hi ha límit de mida ni problemes amb les cometes.
 
-Si un `<nom>.json` no és JSON vàlid, és buit o li falta algun dels camps `model`, `effort` o `prompt`, el watcher mostra una línia d'error en pantalla (`ERROR feina <nom> ignorada: ...`) i el salta sense aturar-se ni reanomenar-lo. El fitxer es queda a la cua i només es torna a provar si es modifica, així no es repeteix l'avís cada 5 segons. Un fitxer que encara s'està escrivint pot provocar un avís puntual i es processa igualment quan l'escriptura acaba.
+Si un `<nom>.json` no és JSON vàlid, és buit o li falta algun dels camps `model`, `effort` o `prompt`, el watcher mostra una línia d'error en pantalla (`ERROR feina <nom> ignorada: ...`, o un avís si ja hi era en arrencar) i el salta sense aturar-se ni reanomenar-lo. El fitxer es queda a la cua i només es torna a provar si es modifica, així no es repeteix l'avís cada 5 segons. Un fitxer que encara s'està escrivint pot provocar un avís puntual i es processa igualment quan l'escriptura acaba.
 
 `claude-watcher` crida `claude -p` (mode no interactiu). En aquest mode, les eines que necessitarien confirmació es deneguen; si la feina ha de modificar fitxers, cal configurar els permisos a la `settings.json` del directori de treball.
 
@@ -153,3 +156,5 @@ Per cada `<nom>.json` processat apareixen a la cua, en UTF-8:
 1. Claude escriu un `<nom>.json` a la cua del watcher que toqui.
 2. Espera que aparegui `<nom>.json.done`.
 3. Comprova que la línia `Fi feina <nom>` digui `OK` (o que existeixi `<nom>.md`) i llegeix `<nom>.md` amb la resposta.
+
+Si `<nom>.json.done` no apareix al cap d'uns 20 segons d'haver escrit el `.json`, el watcher no corre o ha rebutjat la feina: mira la pantalla del watcher abans de seguir esperant. A les rutes de Windows dins del `prompt`, vigila les seqüències d'escapament (`\a`, `\b`, `\n`, `\t`...): una ruta com `gpt-queue\aicw-...` escrita en una cadena no literal acaba amb un caràcter de control en lloc de `\a`. Fer servir barres `/` a les rutes ho evita.
