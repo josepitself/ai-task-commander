@@ -1,14 +1,32 @@
 ﻿# Vigila C:\Claude\HomeAssistant\claude-queue\*.json i executa claude (Claude Code) per cada feina.
 # Format del JSON: { "model": "claude-sonnet-5", "effort": "medium", "prompt": "..." }
 # Resultat: <nom>.md (resposta), <nom>.err (stderr), <nom>.json.done (feina consumida)
-# Ús: .\claude-watcher.ps1 [-Force]
-#   -Force  Arrenca encara que hi hagi feines pendents (*.json) a la cua i les processa.
+# Ús: .\claude-watcher.ps1 [-Force] [-Queue <dir>] [-WorkDir <dir>]
+#   -Force          Arrenca encara que hi hagi feines pendents (*.json) a la cua i les processa.
+#   -Queue <dir>    Directori de cua (per defecte C:\Claude\HomeAssistant\claude-queue).
+#   -WorkDir <dir>  Directori de treball de la CLI (per defecte C:\Claude\HomeAssistant).
 param(
-  [switch]$Force
+  [switch]$Force,
+  [string]$Queue = 'C:\Claude\HomeAssistant\claude-queue',
+  [string]$WorkDir = 'C:\Claude\HomeAssistant'
 )
 
-$q = 'C:\Claude\HomeAssistant\claude-queue'
-$workdir = 'C:\Claude\HomeAssistant'
+$q = $Queue
+$workdir = $WorkDir
+
+# Sense codis de color ANSI al .err (claude en genera encara que stderr no sigui un terminal).
+$env:NO_COLOR = '1'
+
+# Start-Process necessita un executable real (.exe o .cmd).
+$claudeExe = $null
+foreach ($n in 'claude.exe', 'claude.cmd') {
+  $c = Get-Command $n -ErrorAction SilentlyContinue
+  if ($c) { $claudeExe = $c.Source; break }
+}
+if (-not $claudeExe) {
+  Write-Error "No s'ha trobat la CLI claude (claude.exe o claude.cmd) al PATH."
+  exit 1
+}
 
 # --- Preparació del directori de cua ---------------------------------------
 if (Test-Path -LiteralPath $q -PathType Leaf) {
@@ -69,15 +87,27 @@ while ($true) {
     Write-Host "[$(Get-Date -Format HH:mm:ss)] Inici feina $base ($($job.model)/$($job.effort))"
     $exitCode = $null
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    # claude no té --cd: es canvia el directori de treball mentre dura la feina.
-    Push-Location $workdir
+    # El prompt s'envia per stdin des d'un fitxer temporal (UTF-8 sense BOM): així no passa per la
+    # línia d'ordres, que té límit de mida i problemes amb les cometes.
+    $promptFile = Join-Path $env:TEMP "claude-watcher-$PID-$base.prompt"
+    [IO.File]::WriteAllText($promptFile, [string]$job.prompt, (New-Object Text.UTF8Encoding $false))
     try {
-      claude -p --model $job.model --effort $job.effort --output-format text $job.prompt `
-        2> "$q\$base.err" | Out-File -FilePath "$q\$base.md" -Encoding UTF8
-      $exitCode = $LASTEXITCODE
+      # Start-Process passa els fitxers directament al procés fill: el .md és la resposta en UTF-8 tal
+      # com la CLI l'escriu, i el .err queda en brut, sense que PowerShell l'embolcalli com a
+      # NativeCommandError ni el converteixi a UTF-16. claude no té --cd: s'usa -WorkingDirectory.
+      $argList = @('-p', '--model', $job.model, '--effort', $job.effort, '--output-format', 'text')
+      $p = Start-Process -FilePath $claudeExe -ArgumentList $argList -WorkingDirectory $workdir -NoNewWindow -PassThru `
+        -RedirectStandardInput $promptFile -RedirectStandardOutput "$q\$base.md" -RedirectStandardError "$q\$base.err"
+      $null = $p.Handle   # necessari perquè ExitCode s'ompli després de WaitForExit
+      $p.WaitForExit()
+      $exitCode = $p.ExitCode
+    }
+    catch {
+      Write-Host "[$(Get-Date -Format HH:mm:ss)] ERROR no s'ha pogut executar claude: $($_.Exception.Message)" -ForegroundColor Red
+      $exitCode = -1
     }
     finally {
-      Pop-Location
+      Remove-Item -LiteralPath $promptFile -Force -ErrorAction SilentlyContinue
     }
     $sw.Stop()
     Rename-Item -LiteralPath $file.FullName "$($file.FullName).done"

@@ -1,13 +1,29 @@
 ﻿# Vigila C:\Claude\HomeAssistant\gpt-queue\*.json i executa codex per cada feina.
 # Format del JSON: { "model": "gpt-5.5", "effort": "medium", "prompt": "..." }
 # Resultat: <nom>.md (resposta), <nom>.err (stderr), <nom>.json.done (feina consumida)
-# Ús: .\gpt-watcher.ps1 [-Force]
-#   -Force  Arrenca encara que hi hagi feines pendents (*.json) a la cua i les processa.
+# Ús: .\gpt-watcher.ps1 [-Force] [-Queue <dir>] [-WorkDir <dir>]
+#   -Force          Arrenca encara que hi hagi feines pendents (*.json) a la cua i les processa.
+#   -Queue <dir>    Directori de cua (per defecte C:\Claude\HomeAssistant\gpt-queue).
+#   -WorkDir <dir>  Directori de treball de la CLI (per defecte C:\Claude\HomeAssistant).
 param(
-  [switch]$Force
+  [switch]$Force,
+  [string]$Queue = 'C:\Claude\HomeAssistant\gpt-queue',
+  [string]$WorkDir = 'C:\Claude\HomeAssistant'
 )
 
-$q = 'C:\Claude\HomeAssistant\gpt-queue'
+$q = $Queue
+$workdir = $WorkDir
+
+# Start-Process necessita un executable real (.exe o .cmd), no el shim codex.ps1 de npm.
+$codexExe = $null
+foreach ($n in 'codex.exe', 'codex.cmd') {
+  $c = Get-Command $n -ErrorAction SilentlyContinue
+  if ($c) { $codexExe = $c.Source; break }
+}
+if (-not $codexExe) {
+  Write-Error "No s'ha trobat la CLI codex (codex.exe o codex.cmd) al PATH."
+  exit 1
+}
 
 # --- Preparació del directori de cua ---------------------------------------
 if (Test-Path -LiteralPath $q -PathType Leaf) {
@@ -68,10 +84,34 @@ while ($true) {
     Write-Host "[$(Get-Date -Format HH:mm:ss)] Inici feina $base ($($job.model)/$($job.effort))"
     $exitCode = $null
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    codex exec --skip-git-repo-check --model $job.model --cd 'C:\Claude\HomeAssistant' `
-      -o "$q\$base.md" -c "model_reasoning_effort=`"$($job.effort)`"" -c 'model_reasoning_summary="none"' `
-      $job.prompt 2> "$q\$base.err" | Out-Null
-    $exitCode = $LASTEXITCODE
+    # El prompt s'envia per stdin des d'un fitxer temporal (UTF-8 sense BOM): així no passa per la
+    # línia d'ordres, que té límit de mida i problemes amb les cometes.
+    $promptFile = Join-Path $env:TEMP "gpt-watcher-$PID-$base.prompt"
+    $stdoutFile = Join-Path $env:TEMP "gpt-watcher-$PID-$base.stdout"
+    [IO.File]::WriteAllText($promptFile, [string]$job.prompt, (New-Object Text.UTF8Encoding $false))
+    try {
+      # Start-Process passa els fitxers directament al procés fill: el .err queda en brut (UTF-8),
+      # sense que PowerShell l'embolcalli com a NativeCommandError ni el converteixi a UTF-16.
+      # La resposta final va a <nom>.md via -o; el que codex escriu a stdout es descarta.
+      $argList = @(
+        'exec', '--skip-git-repo-check', '--color', 'never',
+        '--model', $job.model, '--cd', "`"$workdir`"", '-o', "`"$q\$base.md`"",
+        '-c', "model_reasoning_effort=$($job.effort)", '-c', 'model_reasoning_summary=none',
+        '-'
+      )
+      $p = Start-Process -FilePath $codexExe -ArgumentList $argList -NoNewWindow -PassThru `
+        -RedirectStandardInput $promptFile -RedirectStandardOutput $stdoutFile -RedirectStandardError "$q\$base.err"
+      $null = $p.Handle   # necessari perquè ExitCode s'ompli després de WaitForExit
+      $p.WaitForExit()
+      $exitCode = $p.ExitCode
+    }
+    catch {
+      Write-Host "[$(Get-Date -Format HH:mm:ss)] ERROR no s'ha pogut executar codex: $($_.Exception.Message)" -ForegroundColor Red
+      $exitCode = -1
+    }
+    finally {
+      Remove-Item -LiteralPath $promptFile, $stdoutFile -Force -ErrorAction SilentlyContinue
+    }
     $sw.Stop()
     Rename-Item -LiteralPath $file.FullName "$($file.FullName).done"
     $errSize = (Get-Item -LiteralPath "$q\$base.err" -ErrorAction SilentlyContinue).Length
