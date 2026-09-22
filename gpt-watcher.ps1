@@ -114,10 +114,18 @@ while ($true) {
     }
     $sw.Stop()
     Rename-Item -LiteralPath $file.FullName "$($file.FullName).done"
+    $durada = "$($sw.Elapsed.TotalSeconds.ToString('N1')) s"
+    # El resultat es decideix pel codi de sortida de la CLI (0 = bé; codex i claude tornen 1 si fallen,
+    # per exemple amb un model inexistent). Si la CLI acaba amb 0 però no ha escrit el .md, també és error.
     $errSize = (Get-Item -LiteralPath "$q\$base.err" -ErrorAction SilentlyContinue).Length
-    $estat = "codi de sortida $exitCode"
-    if ($errSize -gt 0) { $estat += ", revisa $base.err" }
-    Write-Host "[$(Get-Date -Format HH:mm:ss)] Fi feina $base ($($sw.Elapsed.TotalSeconds.ToString('N1')) s, $estat) -> $base.md"
+    if ($exitCode -eq 0 -and (Test-Path -LiteralPath "$q\$base.md")) {
+      Write-Host "[$(Get-Date -Format HH:mm:ss)] Fi feina ${base}: OK ($durada) -> $base.md" -ForegroundColor Green
+    }
+    else {
+      $motiu = if ($exitCode -ne 0) { "codi de sortida $exitCode" } else { "no s'ha escrit $base.md" }
+      if ($errSize -gt 0) { $motiu += ", revisa $base.err" }
+      Write-Host "[$(Get-Date -Format HH:mm:ss)] Fi feina ${base}: ERROR ($durada, $motiu)" -ForegroundColor Red
+    }
   }
   Start-Sleep -Seconds 5
 }
