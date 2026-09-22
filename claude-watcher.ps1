@@ -33,6 +33,26 @@ if (-not (Test-Path -LiteralPath $workdir -PathType Container)) {
   exit 1
 }
 
+# --- Validació d'una feina ---------------------------------------------------
+# Retorna $null si el fitxer és una feina vàlida, o el motiu (text) si no ho és.
+# Contracte: la cua només conté feines (*.json amb model, effort i prompt) i el seu històric.
+# Un *.json que no ho compleix (JSON invàlid, buit, a mig escriure o un fitxer de dades deixat
+# a la cua per error) s'avisa i s'ignora, però no atura el watcher ni en bloqueja l'arrencada.
+function Get-JobError([IO.FileInfo]$file) {
+  try {
+    $job = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+  }
+  catch {
+    return "no és JSON vàlid ($($_.Exception.Message))"
+  }
+  if ($null -eq $job) { return "el fitxer és buit" }
+  if (-not $job.model -or -not $job.effort -or -not $job.prompt) { return "falten els camps model, effort o prompt" }
+  return $null
+}
+
+# Feines invàlides ja avisades (ruta + data de modificació). Es tornen a provar si el fitxer canvia.
+$invalid = @{}
+
 # --- Preparació del directori de cua ---------------------------------------
 if (Test-Path -LiteralPath $q -PathType Leaf) {
   Write-Error "La ruta $q existeix però és un fitxer, no un directori."
@@ -44,9 +64,19 @@ if (-not (Test-Path -LiteralPath $q -PathType Container)) {
   Write-Host "Creat el directori de cua $q"
 }
 else {
-  # Només compten les feines pendents (*.json). L'històric (*.json.done, *.md, *.err) es conserva.
-  $pending = @(Get-ChildItem -LiteralPath $q -File | Where-Object { $_.Extension -eq '.json' })
+  # Només compten com a pendents les feines vàlides. L'històric (*.json.done, *.md, *.err) es conserva.
+  # Els *.json que no són feines s'avisen aquí un sol cop i no bloquegen l'arrencada.
+  $jsons   = @(Get-ChildItem -LiteralPath $q -File | Where-Object { $_.Extension -eq '.json' })
   $done    = @(Get-ChildItem -LiteralPath $q -File | Where-Object { $_.Name -like '*.json.done' })
+  $pending = @()
+  foreach ($f in $jsons) {
+    $motiu = Get-JobError $f
+    if ($null -eq $motiu) { $pending += $f }
+    else {
+      Write-Warning "El fitxer $($f.Name) no és una feina ($motiu): s'ignora. La cua només hauria de contenir feines i el seu històric."
+      $invalid["$($f.FullName)|$($f.LastWriteTimeUtc.Ticks)"] = $true
+    }
+  }
   Write-Host "Cua $q : $($done.Count) feines fetes, $($pending.Count) pendents"
   if ($pending.Count -gt 0) {
     if ($Force) {
@@ -61,8 +91,6 @@ else {
 
 # --- Bucle de vigilància ----------------------------------------------------
 Write-Host "Vigilant $q (Ctrl+C per aturar)"
-# Feines invàlides ja avisades (ruta + data de modificació). Es tornen a provar si el fitxer canvia.
-$invalid = @{}
 while ($true) {
   Get-ChildItem "$q\*.json" | Sort-Object LastWriteTime | ForEach-Object {
     $file = $_
@@ -71,23 +99,13 @@ while ($true) {
     if ($invalid.ContainsKey($stamp)) { return }
 
     # Un JSON invàlid (o a mig escriure) no atura el watcher: s'avisa un cop i s'ignora fins que canviï.
-    $job = $null
-    $motiu = $null
-    try {
-      $job = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-    }
-    catch {
-      $motiu = "no és JSON vàlid ($($_.Exception.Message))"
-    }
-    if ($null -eq $motiu) {
-      if ($null -eq $job) { $motiu = "el fitxer és buit" }
-      elseif (-not $job.model -or -not $job.effort -or -not $job.prompt) { $motiu = "falten els camps model, effort o prompt" }
-    }
+    $motiu = Get-JobError $file
     if ($null -ne $motiu) {
       Write-Host "[$(Get-Date -Format HH:mm:ss)] ERROR feina $base ignorada: $motiu" -ForegroundColor Red
       $invalid[$stamp] = $true
       return
     }
+    $job = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
 
     Write-Host "[$(Get-Date -Format HH:mm:ss)] Inici feina $base ($($job.model)/$($job.effort))"
     $exitCode = $null

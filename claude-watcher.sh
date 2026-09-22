@@ -46,6 +46,36 @@ command -v claude >/dev/null 2>&1 || { echo "No s'ha trobat la CLI claude al PAT
 command -v python3 >/dev/null 2>&1 || { echo "Cal python3 per llegir els fitxers JSON de la cua." >&2; exit 1; }
 [ -d "$WORKDIR" ] || { echo "El directori de treball $WORKDIR no existeix." >&2; exit 1; }
 
+# --- Validació d'una feina ---------------------------------------------------
+# No escriu res i torna 0 si el fitxer és una feina vàlida; si no, escriu el motiu a stdout i torna 1.
+# Contracte: la cua només conté feines (*.json amb model, effort i prompt) i el seu històric.
+# Un *.json que no ho compleix (JSON invàlid, buit, a mig escriure o un fitxer de dades deixat
+# a la cua per error) s'avisa i s'ignora, però no atura el watcher ni en bloqueja l'arrencada.
+job_error() {
+  python3 - "$1" <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
+except OSError as e:
+    print(f"no es pot llegir ({e})"); sys.exit(1)
+if not raw.strip():
+    print("el fitxer és buit"); sys.exit(1)
+try:
+    job = json.loads(raw)
+except ValueError as e:
+    print(f"no és JSON vàlid ({e})"); sys.exit(1)
+if not isinstance(job, dict) or not all(job.get(k) for k in ("model", "effort", "prompt")):
+    print("falten els camps model, effort o prompt"); sys.exit(1)
+if "\n" in str(job["model"]) or "\n" in str(job["effort"]):
+    print("model o effort contenen salts de línia"); sys.exit(1)
+PY
+}
+
+# Feines invàlides ja avisades (ruta + data de modificació). Es tornen a provar si el fitxer canvia.
+declare -A invalid=()
+
 # --- Preparació del directori de cua ---------------------------------------
 if [ -e "$QUEUE" ] && [ ! -d "$QUEUE" ]; then
   echo "La ruta $QUEUE existeix però és un fitxer, no un directori." >&2
@@ -56,9 +86,19 @@ if [ ! -d "$QUEUE" ]; then
   mkdir -p "$QUEUE" || exit 1
   echo "Creat el directori de cua $QUEUE"
 else
-  # Només compten les feines pendents (*.json). L'històric (*.json.done, *.md, *.err) es conserva.
-  pending=("$QUEUE"/*.json)
+  # Només compten com a pendents les feines vàlides. L'històric (*.json.done, *.md, *.err) es conserva.
+  # Els *.json que no són feines s'avisen aquí un sol cop i no bloquegen l'arrencada.
+  jsons=("$QUEUE"/*.json)
   done_jobs=("$QUEUE"/*.json.done)
+  pending=()
+  for f in "${jsons[@]}"; do
+    if motiu=$(job_error "$f"); then
+      pending+=("$f")
+    else
+      echo "${YELLOW}AVÍS: El fitxer $(basename "$f") no és una feina ($motiu): s'ignora. La cua només hauria de contenir feines i el seu històric.${RESET}"
+      invalid["$f|$(stat -c %Y "$f")"]=1
+    fi
+  done
   echo "Cua $QUEUE : ${#done_jobs[@]} feines fetes, ${#pending[@]} pendents"
   if [ ${#pending[@]} -gt 0 ]; then
     noms=$(printf '%s\n' "${pending[@]}" | xargs -n1 basename | paste -sd, - | sed 's/,/, /g')
@@ -75,28 +115,15 @@ fi
 # Escriu model i effort a stdout (una línia cada un) i el prompt al fitxer indicat.
 # Amb codi de sortida 1 escriu el motiu a stdout.
 llegeix_feina() {
+  job_error "$1" || return 1
   python3 - "$1" "$2" <<'PY'
 import json, sys
 path, prompt_file = sys.argv[1], sys.argv[2]
-try:
-    with open(path, encoding="utf-8") as f:
-        raw = f.read()
-except OSError as e:
-    print(f"no es pot llegir ({e})"); sys.exit(1)
-if not raw.strip():
-    print("el fitxer és buit"); sys.exit(1)
-try:
-    job = json.loads(raw)
-except ValueError as e:
-    print(f"no és JSON vàlid ({e})"); sys.exit(1)
-if not isinstance(job, dict) or not all(job.get(k) for k in ("model", "effort", "prompt")):
-    print("falten els camps model, effort o prompt"); sys.exit(1)
-model, effort = str(job["model"]), str(job["effort"])
-if "\n" in model or "\n" in effort:
-    print("model o effort contenen salts de línia"); sys.exit(1)
+with open(path, encoding="utf-8") as f:
+    job = json.load(f)
 with open(prompt_file, "w", encoding="utf-8") as f:
     f.write(str(job["prompt"]))
-print(model); print(effort)
+print(str(job["model"])); print(str(job["effort"]))
 PY
 }
 
@@ -104,8 +131,6 @@ PY
 echo "Vigilant $QUEUE (Ctrl+C per aturar)"
 promptfile=$(mktemp "${TMPDIR:-/tmp}/claude-watcher.XXXXXX") || exit 1
 trap 'rm -f "$promptfile"' EXIT
-# Feines invàlides ja avisades (ruta + data de modificació). Es tornen a provar si el fitxer canvia.
-declare -A invalid=()
 while true; do
   jobs_list=("$QUEUE"/*.json)
   if [ ${#jobs_list[@]} -gt 0 ]; then
