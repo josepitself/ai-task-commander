@@ -25,6 +25,11 @@ if (-not $codexExe) {
   exit 1
 }
 
+if (-not (Test-Path -LiteralPath $workdir -PathType Container)) {
+  Write-Error "El directori de treball $workdir no existeix."
+  exit 1
+}
+
 # --- Preparació del directori de cua ---------------------------------------
 if (Test-Path -LiteralPath $q -PathType Leaf) {
   Write-Error "La ruta $q existeix però és un fitxer, no un directori."
