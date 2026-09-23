@@ -158,3 +158,40 @@ Per cada `<nom>.json` processat apareixen a la cua, en UTF-8:
 3. Comprova que la línia `Fi feina <nom>` digui `OK` (o que existeixi `<nom>.md`) i llegeix `<nom>.md` amb la resposta.
 
 Si `<nom>.json.done` no apareix al cap d'uns 20 segons d'haver escrit el `.json`, el watcher no corre o ha rebutjat la feina: mira la pantalla del watcher abans de seguir esperant. A les rutes de Windows dins del `prompt`, vigila les seqüències d'escapament (`\a`, `\b`, `\n`, `\t`...): una ruta com `gpt-queue\aicw-...` escrita en una cadena no literal acaba amb un caràcter de control en lloc de `\a`. Fer servir barres `/` a les rutes ho evita.
+
+### Exemple d'instruccions a CLAUDE.md
+
+Per fer que Claude Code delegui feines a GPT de manera autònoma, afegeix una secció com aquesta al `CLAUDE.md` del projecte. Ajusta la ruta de la cua si has arrencat el watcher amb `-Queue`.
+
+````markdown
+## Delegar feines a GPT (codex) via el watcher
+
+Quan et demani una segona opinió, una revisió o una anàlisi de GPT, delega-la
+al `gpt-watcher` en comptes de respondre-la tu:
+
+1. Escriu un fitxer de feina a `C:/Claude/HomeAssistant/gpt-queue/<nom>.json` amb
+   l'eina Write (així queda en UTF-8; `Set-Content` o `>` de PowerShell no ho
+   garanteixen). Fes servir un nom únic, per exemple `aicw-<tema>`. Contingut:
+
+   ```json
+   {
+     "model": "gpt-5.5",
+     "effort": "high",
+     "prompt": "Text de la petició"
+   }
+   ```
+
+   El codex s'executa al directori de treball del watcher, així que al `prompt`
+   pots referir-te als fitxers per ruta relativa. Si has de passar-li molt text
+   o dades, deixa-ho en un fitxer a part dins del directori de treball (mai un
+   altre `.json` a la cua) i esmenta la ruta al `prompt`.
+
+2. Espera que aparegui `C:/Claude/HomeAssistant/gpt-queue/<nom>.json.done`. Si al
+   cap d'uns 20 segons no hi és, atura't i avisa'm: el watcher no corre o ha
+   rebutjat la feina.
+
+3. Si existeix `<nom>.md`, llegeix-lo: és la resposta de GPT. Si no hi és, la
+   feina ha fallat; llegeix el final de `<nom>.err` per veure la línia `ERROR:`.
+````
+
+El `claude-watcher` funciona igual amb la cua `claude-queue` i els valors de `model` i `effort` de Claude Code.
