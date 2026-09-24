@@ -2,6 +2,7 @@
 # Vigila <cua>/*.json i executa codex per cada feina.
 # Format del JSON: { "model": "gpt-5.5", "effort": "medium", "prompt": "..." }
 # Resultat: <nom>.md (resposta), <nom>.err (stderr), <nom>.json.done (feina consumida)
+# Mentre s'executa: <nom>.pid amb el PID del procés de la CLI; s'esborra quan acaba.
 # Ús: ./gpt-watcher.sh [-f|--force] [-q|--queue DIR] [-w|--workdir DIR] [-h|--help]
 # Requisits: bash 4+, python3 (per llegir el JSON) i la CLI codex al PATH amb sessió iniciada.
 set -u
@@ -130,7 +131,11 @@ PY
 # --- Bucle de vigilància ----------------------------------------------------
 echo "Vigilant $QUEUE (Ctrl+C per aturar)"
 promptfile=$(mktemp "${TMPDIR:-/tmp}/gpt-watcher.XXXXXX") || exit 1
-trap 'rm -f "$promptfile"' EXIT
+# Si el watcher s'atura a mig fer (Ctrl+C, kill), atura també la CLI i esborra el .pid de la feina en curs:
+# així el .pid no desapareix mentre la CLI encara treballa.
+pidfile=""
+cli_pid=""
+trap '[ -n "$cli_pid" ] && kill "$cli_pid" 2>/dev/null; rm -f "$promptfile" ${pidfile:+"$pidfile"}' EXIT
 while true; do
   jobs_list=("$QUEUE"/*.json)
   if [ ${#jobs_list[@]} -gt 0 ]; then
@@ -157,10 +162,19 @@ while true; do
     t0=$(date +%s%N)
     # El prompt entra per stdin (fitxer temporal): no passa per la línia d'ordres.
     # La resposta final va a <nom>.md via -o; el registre de progrés de codex va a <nom>.err.
-    codex exec --skip-git-repo-check --color never --model "$model" --cd "$WORKDIR" -o "$QUEUE/$base.md" \
-      -c "model_reasoning_effort=$effort" -c 'model_reasoning_summary=none' - \
-      <"$promptfile" >/dev/null 2>"$QUEUE/$base.err"
+    # S'engega en segon pla per conèixer-ne el PID; wait recupera el codi de sortida. Als processos en
+    # segon pla bash els deixa SIGINT ignorat: trap - INT ho restaura perquè Ctrl+C també aturi la CLI.
+    ( trap - INT; exec codex exec --skip-git-repo-check --color never --model "$model" --cd "$WORKDIR" \
+        -o "$QUEUE/$base.md" -c "model_reasoning_effort=$effort" -c 'model_reasoning_summary=none' - ) \
+      <"$promptfile" >/dev/null 2>"$QUEUE/$base.err" &
+    cli_pid=$!
+    # Mentre la CLI corre, <nom>.pid conté el seu PID: un observador pot comprovar si el procés existeix.
+    pidfile="$QUEUE/$base.pid"
+    echo "$cli_pid" >"$pidfile"
+    wait "$cli_pid"
     rc=$?
+    # El .pid desapareix abans de reanomenar el .json: si hi ha .json.done, ja no hi ha .pid.
+    rm -f "$pidfile"; pidfile=""; cli_pid=""
     ms=$(( ($(date +%s%N) - t0) / 1000000 ))
     durada="$((ms / 1000)).$(( (ms % 1000) / 100 )) s"
     mv -f "$file" "$file.done"

@@ -1,6 +1,7 @@
 ﻿# Vigila C:\Claude\HomeAssistant\claude-queue\*.json i executa claude (Claude Code) per cada feina.
 # Format del JSON: { "model": "claude-sonnet-5", "effort": "medium", "prompt": "..." }
 # Resultat: <nom>.md (resposta), <nom>.err (stderr), <nom>.json.done (feina consumida)
+# Mentre s'executa: <nom>.pid amb el PID del procés de la CLI; s'esborra quan acaba.
 # Ús: .\claude-watcher.ps1 [-Force] [-Queue <dir>] [-WorkDir <dir>]
 #   -Force          Arrenca encara que hi hagi feines pendents (*.json) a la cua i les processa.
 #   -Queue <dir>    Directori de cua (per defecte C:\Claude\HomeAssistant\claude-queue).
@@ -113,6 +114,8 @@ while ($true) {
     # El prompt s'envia per stdin des d'un fitxer temporal (UTF-8 sense BOM): així no passa per la
     # línia d'ordres, que té límit de mida i problemes amb les cometes.
     $promptFile = Join-Path $env:TEMP "claude-watcher-$PID-$base.prompt"
+    # Mentre la CLI corre, <nom>.pid conté el seu PID: un observador pot comprovar si el procés existeix.
+    $pidFile = "$q\$base.pid"
     [IO.File]::WriteAllText($promptFile, [string]$job.prompt, (New-Object Text.UTF8Encoding $false))
     try {
       # Start-Process passa els fitxers directament al procés fill: el .md és la resposta en UTF-8 tal
@@ -122,6 +125,7 @@ while ($true) {
       $p = Start-Process -FilePath $claudeExe -ArgumentList $argList -WorkingDirectory $workdir -NoNewWindow -PassThru `
         -RedirectStandardInput $promptFile -RedirectStandardOutput "$q\$base.md" -RedirectStandardError "$q\$base.err"
       $null = $p.Handle   # necessari perquè ExitCode s'ompli després de WaitForExit
+      [IO.File]::WriteAllText($pidFile, [string]$p.Id)   # UTF-8 sense BOM, només el número
       $p.WaitForExit()
       $exitCode = $p.ExitCode
     }
@@ -131,6 +135,8 @@ while ($true) {
     }
     finally {
       Remove-Item -LiteralPath $promptFile -Force -ErrorAction SilentlyContinue
+      # El .pid desapareix abans de reanomenar el .json: si hi ha .json.done, ja no hi ha .pid.
+      Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
     }
     $sw.Stop()
     Rename-Item -LiteralPath $file.FullName "$($file.FullName).done"

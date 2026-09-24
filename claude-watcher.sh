@@ -2,6 +2,7 @@
 # Vigila <cua>/*.json i executa claude (Claude Code) per cada feina.
 # Format del JSON: { "model": "claude-sonnet-5", "effort": "medium", "prompt": "..." }
 # Resultat: <nom>.md (resposta), <nom>.err (stderr), <nom>.json.done (feina consumida)
+# Mentre s'executa: <nom>.pid amb el PID del procés de la CLI; s'esborra quan acaba.
 # Ús: ./claude-watcher.sh [-f|--force] [-q|--queue DIR] [-w|--workdir DIR] [-h|--help]
 # Requisits: bash 4+, python3 (per llegir el JSON) i la CLI claude al PATH amb sessió iniciada.
 set -u
@@ -130,7 +131,11 @@ PY
 # --- Bucle de vigilància ----------------------------------------------------
 echo "Vigilant $QUEUE (Ctrl+C per aturar)"
 promptfile=$(mktemp "${TMPDIR:-/tmp}/claude-watcher.XXXXXX") || exit 1
-trap 'rm -f "$promptfile"' EXIT
+# Si el watcher s'atura a mig fer (Ctrl+C, kill), atura també la CLI i esborra el .pid de la feina en curs:
+# així el .pid no desapareix mentre la CLI encara treballa.
+pidfile=""
+cli_pid=""
+trap '[ -n "$cli_pid" ] && kill "$cli_pid" 2>/dev/null; rm -f "$promptfile" ${pidfile:+"$pidfile"}' EXIT
 while true; do
   jobs_list=("$QUEUE"/*.json)
   if [ ${#jobs_list[@]} -gt 0 ]; then
@@ -156,11 +161,20 @@ while true; do
     echo "[$(ara)] Inici feina $base ($model/$effort)"
     t0=$(date +%s%N)
     # El prompt entra per stdin (fitxer temporal): no passa per la línia d'ordres.
-    # claude no té --cd: s'executa en un subshell dins del directori de treball.
-    # NO_COLOR evita codis ANSI al .err.
-    (cd "$WORKDIR" && NO_COLOR=1 claude -p --model "$model" --effort "$effort" --output-format text) \
-      <"$promptfile" >"$QUEUE/$base.md" 2>"$QUEUE/$base.err"
+    # claude no té --cd: s'executa en un subshell dins del directori de treball. NO_COLOR evita codis
+    # ANSI al .err. S'engega en segon pla per conèixer-ne el PID, i exec fa que el PID del subshell
+    # sigui el de claude; wait recupera el codi de sortida. Als processos en segon pla bash els deixa
+    # SIGINT ignorat: trap - INT ho restaura perquè Ctrl+C també aturi la CLI.
+    (cd "$WORKDIR" && trap - INT && NO_COLOR=1 exec claude -p --model "$model" --effort "$effort" --output-format text) \
+      <"$promptfile" >"$QUEUE/$base.md" 2>"$QUEUE/$base.err" &
+    cli_pid=$!
+    # Mentre la CLI corre, <nom>.pid conté el seu PID: un observador pot comprovar si el procés existeix.
+    pidfile="$QUEUE/$base.pid"
+    echo "$cli_pid" >"$pidfile"
+    wait "$cli_pid"
     rc=$?
+    # El .pid desapareix abans de reanomenar el .json: si hi ha .json.done, ja no hi ha .pid.
+    rm -f "$pidfile"; pidfile=""; cli_pid=""
     ms=$(( ($(date +%s%N) - t0) / 1000000 ))
     durada="$((ms / 1000)).$(( (ms % 1000) / 100 )) s"
     mv -f "$file" "$file.done"

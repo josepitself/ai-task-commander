@@ -1,6 +1,7 @@
 ﻿# Vigila C:\Claude\HomeAssistant\gpt-queue\*.json i executa codex per cada feina.
 # Format del JSON: { "model": "gpt-5.5", "effort": "medium", "prompt": "..." }
 # Resultat: <nom>.md (resposta), <nom>.err (stderr), <nom>.json.done (feina consumida)
+# Mentre s'executa: <nom>.pid amb el PID del procés de la CLI; s'esborra quan acaba.
 # Ús: .\gpt-watcher.ps1 [-Force] [-Queue <dir>] [-WorkDir <dir>]
 #   -Force          Arrenca encara que hi hagi feines pendents (*.json) a la cua i les processa.
 #   -Queue <dir>    Directori de cua (per defecte C:\Claude\HomeAssistant\gpt-queue).
@@ -111,6 +112,8 @@ while ($true) {
     # línia d'ordres, que té límit de mida i problemes amb les cometes.
     $promptFile = Join-Path $env:TEMP "gpt-watcher-$PID-$base.prompt"
     $stdoutFile = Join-Path $env:TEMP "gpt-watcher-$PID-$base.stdout"
+    # Mentre la CLI corre, <nom>.pid conté el seu PID: un observador pot comprovar si el procés existeix.
+    $pidFile = "$q\$base.pid"
     [IO.File]::WriteAllText($promptFile, [string]$job.prompt, (New-Object Text.UTF8Encoding $false))
     try {
       # Start-Process passa els fitxers directament al procés fill: el .err queda en brut (UTF-8),
@@ -125,6 +128,7 @@ while ($true) {
       $p = Start-Process -FilePath $codexExe -ArgumentList $argList -NoNewWindow -PassThru `
         -RedirectStandardInput $promptFile -RedirectStandardOutput $stdoutFile -RedirectStandardError "$q\$base.err"
       $null = $p.Handle   # necessari perquè ExitCode s'ompli després de WaitForExit
+      [IO.File]::WriteAllText($pidFile, [string]$p.Id)   # UTF-8 sense BOM, només el número
       $p.WaitForExit()
       $exitCode = $p.ExitCode
     }
@@ -134,6 +138,8 @@ while ($true) {
     }
     finally {
       Remove-Item -LiteralPath $promptFile, $stdoutFile -Force -ErrorAction SilentlyContinue
+      # El .pid desapareix abans de reanomenar el .json: si hi ha .json.done, ja no hi ha .pid.
+      Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
     }
     $sw.Stop()
     Rename-Item -LiteralPath $file.FullName "$($file.FullName).done"

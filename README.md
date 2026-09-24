@@ -98,9 +98,9 @@ En arrencar, el watcher fa aquestes comprovacions sobre el directori de cua:
 | Existeix amb `.json` que no són feines | Avís per cada fitxer (`El fitxer <nom> no és una feina (...): s'ignora`), no compten com a pendents i no bloquegen l'arrencada. |
 | Existeix però és un fitxer | Error i sortida amb codi `1`. |
 
-Només compten com a pendents els fitxers `*.json` que són feines vàlides (JSON correcte amb `model`, `effort` i `prompt`). L'històric (`*.json.done`, `*.md`, `*.err`) es conserva al directori i no bloqueja l'arrencada, així es pot revisar més tard. Cap directori existent no s'esborra ni se sobreescriu mai.
+Només compten com a pendents els fitxers `*.json` que són feines vàlides (JSON correcte amb `model`, `effort` i `prompt`). L'històric (`*.json.done`, `*.md`, `*.err`) i qualsevol `*.pid` que hagi quedat d'una execució interrompuda es conserven al directori i no bloquegen l'arrencada, així es pot revisar més tard. Cap directori existent no s'esborra ni se sobreescriu mai.
 
-**Contracte de la cua:** el directori de cua només conté feines i el seu històric. Els fitxers que la feina necessiti (dades, diffs, prompts llargs) van a un altre lloc dins del directori de treball, o a la cua només si no tenen extensió `.json`. Un `.json` que no és una feina (per exemple un fitxer de dades deixat a la cua per error) no atura el watcher: s'avisa un cop i s'ignora, tant a l'arrencada com durant la vigilància. Aquesta tolerància és una xarxa de seguretat, no una invitació a guardar-hi dades.
+**Contracte de la cua:** el directori de cua només conté feines, el seu històric i, mentre una feina s'executa, el seu `<nom>.pid` (vegeu [Fitxer .pid](#fitxer-pid-feina-en-curs)). Els fitxers que la feina necessiti (dades, diffs, prompts llargs) van a un altre lloc dins del directori de treball, o a la cua només si no tenen extensió `.json`. Un `.json` que no és una feina (per exemple un fitxer de dades deixat a la cua per error) no atura el watcher: s'avisa un cop i s'ignora, tant a l'arrencada com durant la vigilància. Aquesta tolerància és una xarxa de seguretat, no una invitació a guardar-hi dades.
 
 La comprovació de pendents evita executar per error feines antigues que s'havien quedat a la cua. Si són vàlides, arrenca amb `-Force`/`--force` i es processaran per ordre.
 
@@ -150,14 +150,40 @@ Per cada `<nom>.json` processat apareixen a la cua, en UTF-8:
 | `<nom>.md` | Resposta final del model. Amb `codex`, si la feina falla no es crea. Amb `claude`, si la feina falla conté el missatge d'error de la CLI. |
 | `<nom>.err` | Sortida d'error estàndard de la CLI, tal com l'escriu. Amb `codex` sempre té contingut: hi va el registre de la sessió (model, ordres executades, resposta, tokens) i, si falla, la línia `ERROR: ...` al final. Amb `claude` és buit si tot ha anat bé. |
 | `<nom>.json.done` | La feina original, reanomenada per marcar-la com a consumida. |
+| `<nom>.pid` | Només existeix mentre la feina s'executa: conté el PID del procés de la CLI. S'esborra quan la CLI acaba, abans de crear el `.json.done`. |
+
+### Fitxer .pid (feina en curs)
+
+Just després de la línia `Inici feina <nom>`, el watcher escriu `<nom>.pid` a la cua amb el PID del procés de la CLI (`codex` o `claude`) que està processant la feina. És el PID del procés fill, no el del watcher: a Windows, si la CLI és un `codex.cmd`/`claude.cmd` de npm, és el PID del `cmd.exe` que l'embolcalla, que viu exactament tant com la CLI. El fitxer conté només el número, en una sola línia i sense BOM (el `.sh` hi afegeix un salt de línia final). Quan la CLI acaba, el watcher esborra el `.pid` i tot seguit reanomena el `.json` a `.json.done`: si existeix `<nom>.json.done`, ja no existeix `<nom>.pid`.
+
+Amb això un observador extern pot saber en quin estat és una feina sense mirar la pantalla del watcher:
+
+| Fitxers presents | Estat |
+|---|---|
+| `<nom>.json`, sense `.pid` | Pendent: encara no ha començat, el watcher no corre, o l'ha rebutjat per invàlida (mira la pantalla del watcher). |
+| `<nom>.json` i `<nom>.pid` amb un PID que existeix | En curs: la CLI encara treballa. |
+| `<nom>.json` i `<nom>.pid` amb un PID que no existeix | El watcher va morir de cop a mig fer (finestra tancada, `kill -9`, apagada). La feina segueix pendent i es tornarà a executar en arrencar amb `-Force`/`--force`, que sobreescriurà el `.pid`. |
+| `<nom>.json.done` | Acabada: mira la línia `Fi feina` o el `<nom>.md`. |
+
+Per comprovar si el PID existeix:
+
+```powershell
+Get-Process -Id (Get-Content C:\Claude\HomeAssistant\gpt-queue\revisio-v3.pid) -ErrorAction SilentlyContinue
+```
+
+```bash
+kill -0 "$(cat ~/Claude/HomeAssistant/gpt-queue/revisio-v3.pid)" 2>/dev/null && echo "en curs" || echo "el procés no existeix"
+```
+
+Si s'atura el watcher amb Ctrl+C a mitja feina, tant el watcher com la CLI acaben i el `.pid` s'esborra; el `.json` queda pendent perquè no s'ha arribat a reanomenar. A Linux, un `kill` del watcher fa el mateix (el trap de sortida atura la CLI). A Windows, si es mata el procés del watcher amb `Stop-Process` o des del Gestor de tasques, la CLI continua i el `.pid` es queda amb el seu PID, encara viu: la taula anterior segueix sent certa. Els PID es reutilitzen: un `.pid` antic podria apuntar per casualitat a un altre procés, així que, si cal, comprova que el procés sigui realment la CLI (`Get-Process` mostra el nom; a Linux, `ps -o comm= -p <pid>`).
 
 ## Ús des de Claude Code
 
 1. Claude escriu un `<nom>.json` a la cua del watcher que toqui.
-2. Espera que aparegui `<nom>.json.done`.
+2. Espera que aparegui `<nom>.json.done`. Mentrestant, `<nom>.pid` indica que la feina és en curs: si hi és i el PID que conté existeix, la CLI encara treballa i val la pena seguir esperant.
 3. Comprova que la línia `Fi feina <nom>` digui `OK` (o que existeixi `<nom>.md`) i llegeix `<nom>.md` amb la resposta.
 
-Si `<nom>.json.done` no apareix al cap d'uns 20 segons d'haver escrit el `.json`, el watcher no corre o ha rebutjat la feina: mira la pantalla del watcher abans de seguir esperant. A les rutes de Windows dins del `prompt`, vigila les seqüències d'escapament (`\a`, `\b`, `\n`, `\t`...): una ruta com `gpt-queue\aicw-...` escrita en una cadena no literal acaba amb un caràcter de control en lloc de `\a`. Fer servir barres `/` a les rutes ho evita.
+Si al cap d'uns 20 segons d'haver escrit el `.json` no hi ha ni `<nom>.pid` ni `<nom>.json.done`, el watcher no corre o ha rebutjat la feina: mira la pantalla del watcher abans de seguir esperant. Si hi ha `<nom>.pid` però el PID que conté no existeix, el watcher va morir a mig fer i cal tornar-lo a arrencar amb `-Force`/`--force`. A les rutes de Windows dins del `prompt`, vigila les seqüències d'escapament (`\a`, `\b`, `\n`, `\t`...): una ruta com `gpt-queue\aicw-...` escrita en una cadena no literal acaba amb un caràcter de control en lloc de `\a`. Fer servir barres `/` a les rutes ho evita.
 
 ### Exemple d'instruccions a CLAUDE.md
 
@@ -186,9 +212,18 @@ al `gpt-watcher` en comptes de respondre-la tu:
    o dades, deixa-ho en un fitxer a part dins del directori de treball (mai un
    altre `.json` a la cua) i esmenta la ruta al `prompt`.
 
-2. Espera que aparegui `C:/Claude/HomeAssistant/gpt-queue/<nom>.json.done`. Si al
-   cap d'uns 20 segons no hi és, atura't i avisa'm: el watcher no corre o ha
-   rebutjat la feina.
+2. Espera que aparegui `C:/Claude/HomeAssistant/gpt-queue/<nom>.json.done`.
+   Mentre la feina s'executa hi ha un `<nom>.pid` a la cua amb el PID del procés
+   de codex; el watcher l'esborra quan codex acaba, abans de crear el `.json.done`.
+   Fes-lo servir per decidir si has de seguir esperant:
+
+   - Hi ha `<nom>.pid` i el PID existeix (a PowerShell,
+     `Get-Process -Id (Get-Content <nom>.pid)` no dóna error): la feina és en
+     curs, segueix esperant sense límit de temps.
+   - Hi ha `<nom>.pid` però el PID no existeix: el watcher ha mort a mig fer.
+     Atura't i avisa'm perquè el torni a arrencar amb `-Force`.
+   - Al cap d'uns 20 segons no hi ha ni `<nom>.pid` ni `<nom>.json.done`:
+     atura't i avisa'm, el watcher no corre o ha rebutjat la feina.
 
 3. Si existeix `<nom>.md`, llegeix-lo: és la resposta de GPT. Si no hi és, la
    feina ha fallat; llegeix el final de `<nom>.err` per veure la línia `ERROR:`.
