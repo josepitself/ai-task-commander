@@ -7,21 +7,24 @@
 #   "psutil>=5.9",
 # ]
 # ///
-"""cli-watcher-monitor: text UI to follow a gpt-watcher / claude-watcher queue.
+"""cli-watcher-monitor: text UI to follow a codex / claude job queue, and optionally run it.
 
 Usage:
     uv run cli-watcher-monitor.py QUEUE_DIR [--refresh 15] [--jobs 5] [--runner auto|codex|claude]
+                                            [--run [--force] [--workdir DIR]]
 
-Read-only: it never writes, renames or deletes anything in the queue.
+Without --run it only reads the queue (another runner processes it).
+With --run it is also the queue runner (replaces gpt-watcher / claude-watcher): every 5 s it runs the
+CLI for each pending <name>.json, oldest first, one at a time, and writes:
+    <name>.status    JSON with state (RUNNING, OK, ERR), start/stop, exit code and metadata.
+                     No .status means the job is queued.
+    <name>.pid       PID of the CLI while it runs (removed when it ends).
+    <name>.md        Answer.   <name>.err   CLI stderr.
+    <name>.json.done The job, renamed once it is finished (its .status is final by then).
+    .monitor-runner.lock  Lock with the runner's PID while it runs (one runner per queue).
 
-Job status is derived from the files the watchers leave in the queue:
-    <name>.json                      QUEUED
-    <name>.json + <name>.pid (alive) RUNNING
-    <name>.json + <name>.pid (dead)  QUEUED (stale .pid: the watcher died mid-job)
-    <name>.json that is not a job    ERR (the watcher ignores it)
-    <name>.json.done                 OK or ERR, inferred from <name>.md / <name>.err
-The watchers do not persist the CLI exit code, so OK/ERR of finished jobs and their
-start/stop times are inferred from file presence and timestamps.
+Status shown for each job: from <name>.status when present; for jobs run by the legacy
+PowerShell/bash watchers (no .status) it is inferred from .pid/.md/.err presence and timestamps.
 """
 
 from __future__ import annotations
@@ -30,7 +33,12 @@ import asyncio
 import json
 import os
 import re
+import shutil
+import socket
 import stat
+import subprocess
+import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -68,6 +76,10 @@ WATCHER_SCRIPTS = {
     "claude-watcher.sh": "claude",
 }
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# model/effort reach the CLI command line (through cmd.exe for npm .cmd shims): plain characters only.
+SAFE_ARG = re.compile(r"^[A-Za-z0-9._:/@+\[\]-]{1,100}$")
+LOCK_NAME = ".monitor-runner.lock"
+POLL_SECONDS = 5
 
 
 class Runner(str, Enum):
@@ -155,6 +167,10 @@ def read_job(path: Path) -> tuple[dict, str | None]:
         return {}, "not a JSON object"
     if not all(job.get(k) for k in ("model", "effort", "prompt")):
         return job, "missing model, effort or prompt"
+    bad = [k for k in ("model", "effort") if not SAFE_ARG.match(str(job[k]))]
+    if bad:
+        verb = "contains" if len(bad) == 1 else "contain"
+        return job, f"{' and '.join(bad)} {verb} characters that are not allowed (only letters, digits and ._:/@+[]-)"
     return job, None
 
 
@@ -165,6 +181,52 @@ def pid_alive(pid: int) -> bool:
         return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
     except (psutil.Error, OSError):
         return False
+
+
+def iso(ts: float | None) -> str | None:
+    return None if ts is None else datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+
+
+def parse_iso(value) -> float | None:
+    try:
+        return datetime.fromisoformat(str(value)).timestamp() if value else None
+    except ValueError:
+        return None
+
+
+def read_json_file(path: Path) -> dict | None:
+    try:
+        data = json.loads(decode(path.read_bytes()))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_json_atomic(path: Path, data: dict) -> None:
+    """Write UTF-8 JSON through a temp file + rename, so readers never see a half-written file."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes((json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    for attempt in range(20):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:  # Windows: a reader has the target open right now
+            time.sleep(0.05 * (attempt + 1))
+    os.replace(tmp, path)
+
+
+def lock_owner(queue: Path) -> tuple[psutil.Process, dict] | None:
+    """Process holding the queue's runner lock, if it is still alive (PID reuse is checked)."""
+    info = read_json_file(queue / LOCK_NAME)
+    if not info:
+        return None
+    try:
+        proc = psutil.Process(int(info["pid"]))
+        if abs(proc.create_time() - float(info["started"])) < 2:
+            return proc, info
+    except (psutil.Error, OSError, KeyError, TypeError, ValueError):
+        pass
+    return None
 
 
 # --- Queue model --------------------------------------------------------------
@@ -178,6 +240,7 @@ class Job:
     md: FileInfo | None
     err: FileInfo | None
     pidf: FileInfo | None
+    statusf: FileInfo | None = None
     model: str = ""
     effort: str = ""
     prompt: str = ""
@@ -187,6 +250,8 @@ class Job:
     queued: float | None = None
     start: float | None = None
     stop: float | None = None
+    exact: bool = False  # status and times come from <name>.status (not inferred)
+    meta: dict | None = None  # contents of <name>.status
 
     @property
     def signature(self) -> tuple:
@@ -196,6 +261,7 @@ class Job:
             self.job_file.sig,
             self.md.sig if self.md else None,
             self.err.sig if self.err else None,
+            self.statusf.sig if self.statusf else None,
             self.pid,
         )
 
@@ -217,6 +283,7 @@ class QueueScanner:
         self.watcher: psutil.Process | None = None
         self.watcher_exact = False  # True when the process command line names the watcher script
         self.watcher_kind: str | None = None
+        self.watcher_builtin = False  # True when the runner is a cli-watcher-monitor --run
 
     # -- jobs --
 
@@ -256,6 +323,7 @@ class QueueScanner:
                 md=stat_file(self.queue / f"{name}.md"),
                 err=stat_file(self.queue / f"{name}.err"),
                 pidf=stat_file(self.queue / f"{name}.pid"),
+                statusf=stat_file(self.queue / f"{name}.status"),
                 queued=fi.mtime,
             )
             data, error = self._parse(fi)
@@ -268,6 +336,8 @@ class QueueScanner:
         # The OK/ERR rules depend on the runner: detect it before classifying.
         self._detect_runner(jobs)
         for job in jobs:
+            if errors[job.name] is None and self._from_status(job):
+                continue
             if job.done:
                 self._finished(job)
             else:
@@ -277,6 +347,39 @@ class QueueScanner:
         self._job_cache = {p: v for p, v in self._job_cache.items() if p in live}
         jobs.sort(key=lambda j: (j.queued or 0, j.name), reverse=True)
         return jobs
+
+    def _from_status(self, job: Job) -> bool:
+        """Use <name>.status (written by --run). Returns False when there is none or it is outdated."""
+        if job.statusf is None:
+            return False
+        meta = read_json_file(job.statusf.path)
+        if not meta:
+            return False
+        start = parse_iso(meta.get("start"))
+        if start is None or start < (job.queued or 0) - 2:
+            return False  # left over from an older job with the same name
+        state = meta.get("state")
+        if state not in (OK, ERR, RUNNING) or (job.done and state == RUNNING):
+            return False
+        job.meta, job.exact = meta, not meta.get("inferred")  # backfilled files mark inferred values
+        job.start, job.stop = start, parse_iso(meta.get("stop"))
+        job.pid = meta.get("pid") if isinstance(meta.get("pid"), int) else None
+        if state in (OK, ERR):
+            job.status = state
+            job.note = meta.get("reason") or f"exit code {meta.get('exit_code')}"
+            return True
+        host = meta.get("host")
+        if host and host != socket.gethostname():
+            job.status, job.note = RUNNING, f"running on {host}"
+        elif job.pid is not None and pid_alive(job.pid):
+            job.status = RUNNING
+        else:
+            job.status, job.stop = QUEUED, None
+            job.note = (
+                f"stale .status: process {job.pid} no longer exists, the runner died mid-job. "
+                "It will run again when the runner is restarted with --force"
+            )
+        return True
 
     def _pending(self, job: Job, error: str | None) -> None:
         if error:
@@ -414,7 +517,15 @@ class QueueScanner:
         return None
 
     def detect_watcher(self) -> None:
-        """Find the watcher by its command line (gives its uptime and runner). Run before scan()."""
+        """Find the runner: a --run monitor (lock file) or a legacy watcher by its command line."""
+        owner = lock_owner(self.queue)
+        if owner:
+            self.watcher, info = owner
+            self.watcher_exact, self.watcher_builtin = True, True
+            self.watcher_kind = info.get("runner") if info.get("runner") in ("codex", "claude") else None
+            return
+        if self.watcher_builtin:
+            self.watcher, self.watcher_exact, self.watcher_kind, self.watcher_builtin = None, False, None, False
         if self.watcher is not None:
             try:
                 # A shell found only as the parent of a running job may outlive the watcher: re-check it.
@@ -444,6 +555,289 @@ class QueueScanner:
                             return
                 except (psutil.Error, OSError):
                     pass
+
+
+# --- Built-in runner (--run) --------------------------------------------------
+
+
+def find_cli(name: str) -> str | None:
+    """Path of the codex/claude CLI. On Windows a real executable (.exe/.cmd), not the npm .ps1 shim."""
+    if os.name == "nt":
+        for ext in (".exe", ".cmd"):
+            found = shutil.which(name + ext)
+            if found:
+                return found
+        return None
+    return shutil.which(name)
+
+
+def kill_tree(pid: int) -> None:
+    """Kill a process and its children (on Windows the .pid of an npm shim is the cmd.exe wrapper)."""
+    try:
+        proc = psutil.Process(pid)
+        procs = proc.children(recursive=True) + [proc]
+    except psutil.Error:
+        return
+    for p in procs:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+    psutil.wait_procs(procs, timeout=5)
+
+
+class QueueRunner(threading.Thread):
+    """Processes the queue like gpt-watcher / claude-watcher, and records each job in <name>.status."""
+
+    def __init__(self, queue: Path, runner: str, cli: str, workdir: Path):
+        super().__init__(daemon=True, name="queue-runner")
+        self.queue, self.runner, self.cli, self.workdir = queue, runner, cli, workdir
+        self.on_event = lambda message, severity: None  # set by the UI; called from this thread
+        self.current: str | None = None
+        self.finished = 0
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+        self._aborted = False
+        self._invalid: set[tuple[str, int]] = set()  # (path, mtime_ns) already reported
+        self.lock_path: Path | None = None
+
+    # -- control (any thread) --
+
+    def stop(self) -> None:
+        """Stop polling and abort the running job: the CLI is killed and its job stays queued."""
+        self._stop_event.set()
+        with self._lock:
+            if self._proc is not None and self._proc.poll() is None:
+                self._aborted = True
+                kill_tree(self._proc.pid)
+
+    # -- loop (runner thread) --
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._pass()
+            except Exception as e:  # never let the runner thread die silently
+                self.on_event(f"Runner error: {e}", "error")
+            self._stop_event.wait(POLL_SECONDS)
+
+    def _pass(self) -> None:
+        files = []
+        for path in self.queue.glob("*.json"):
+            try:
+                files.append((path.stat().st_mtime, path))
+            except OSError:
+                pass
+        for _, path in sorted(files):
+            if self._stop_event.is_set():
+                return
+            try:
+                stamp = (str(path), path.stat().st_mtime_ns)
+            except OSError:
+                continue  # taken or removed meanwhile
+            if stamp in self._invalid:
+                continue
+            job, error = read_job(path)
+            if error:
+                # Like the watchers: report once and skip it until the file changes.
+                self._invalid.add(stamp)
+                self.on_event(f"Job {path.stem} ignored: {error}", "error")
+                continue
+            self._run_job(path, job)
+
+    def _command(self, md: Path) -> tuple[list[str], int | None]:
+        model, effort = self._job["model"], self._job["effort"]
+        if self.runner == "codex":
+            # The answer goes to <name>.md via -o; codex's stdout is discarded.
+            return [
+                self.cli, "exec", "--skip-git-repo-check", "--color", "never", "--model", model,
+                "--cd", str(self.workdir), "-o", str(md), "-c", f"model_reasoning_effort={effort}",
+                "-c", "model_reasoning_summary=none", "-",
+            ], subprocess.DEVNULL
+        # claude has no --cd: it runs in the working directory and its stdout is the answer.
+        return [self.cli, "-p", "--model", model, "--effort", effort, "--output-format", "text"], None
+
+    def _run_job(self, path: Path, job: dict) -> None:
+        base = path.name[: -len(".json")]
+        q = self.queue
+        md, err, pidf, statf = (q / f"{base}{ext}" for ext in (".md", ".err", ".pid", ".status"))
+        self._job = {k: str(job[k]) for k in ("model", "effort", "prompt")}
+        args, stdout_spec = self._command(md)
+        try:
+            queued = path.stat().st_mtime
+        except OSError:
+            return
+        status = {
+            "job": base, "state": RUNNING, "reason": "", "exit_code": None,
+            "queued": iso(queued), "start": None, "stop": None, "duration_s": None,
+            "runner": self.runner, "model": self._job["model"], "effort": self._job["effort"],
+            "pid": None, "cli": self.cli, "workdir": str(self.workdir),
+            "host": socket.gethostname(), "runner_pid": os.getpid(),
+            "output": md.name, "errors": err.name,
+        }
+        self.current = base
+        self.on_event(f"▶ Started {base} ({self._job['model']}/{self._job['effort']})", "information")
+        kwargs: dict = {}
+        if os.name == "nt":  # keep the CLI off the TUI's console
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        env = dict(os.environ, NO_COLOR="1")  # no ANSI colour codes in .err
+        t0 = time.time()
+        rc: int | None = None
+        reason = ""
+        out_fh = err_fh = None
+        try:
+            err_fh = open(err, "wb")
+            out_fh = open(md, "wb") if stdout_spec is None else stdout_spec
+            with self._lock:
+                if self._stop_event.is_set():
+                    self._aborted = True
+                    raise InterruptedError
+                self._proc = subprocess.Popen(
+                    args, cwd=self.workdir, stdin=subprocess.PIPE, stdout=out_fh, stderr=err_fh,
+                    env=env, **kwargs,
+                )
+            proc = self._proc
+            status.update(start=iso(t0), pid=proc.pid)
+            write_json_atomic(statf, status)
+            # While the CLI runs, <name>.pid holds its PID (same contract as the watchers).
+            pidf.write_bytes(f"{proc.pid}\n".encode())
+            try:  # the prompt goes through stdin: no command-line size or quoting limits
+                proc.stdin.write(self._job["prompt"].encode("utf-8"))
+                proc.stdin.close()
+            except OSError:
+                pass  # the CLI exited (or was killed) before reading everything
+            rc = proc.wait()
+        except InterruptedError:
+            pass
+        except OSError as e:
+            rc, reason = -1, f"cannot start the CLI: {e}"
+            if err_fh is not None:
+                err_fh.write(f"ERROR: {reason}\n".encode("utf-8"))
+        finally:
+            for fh in (out_fh, err_fh):
+                if fh not in (None, subprocess.DEVNULL):
+                    fh.close()
+            with self._lock:
+                self._proc = None
+            pidf.unlink(missing_ok=True)
+        t1 = time.time()
+        self.current = None
+        if self._aborted:
+            # Quit mid-job: like Ctrl+C on a watcher, the job stays pending (no .status = queued).
+            statf.unlink(missing_ok=True)
+            return
+        ok = rc == 0 and md.exists()
+        if not reason and not ok:
+            reason = f"exit code {rc}" if rc != 0 else f"exit code 0 but {md.name} was not written"
+        status.update(
+            state=OK if ok else ERR, reason=reason or "exit code 0", exit_code=rc,
+            start=status["start"] or iso(t0), stop=iso(t1), duration_s=round(t1 - t0, 1),
+        )
+        # Order matters for observers: .pid gone, then the final .status, then .json.done.
+        write_json_atomic(statf, status)
+        try:
+            os.replace(path, path.with_name(path.name + ".done"))
+        except OSError as e:
+            self.on_event(f"Cannot rename {path.name} to .json.done: {e}", "error")
+        self.finished += 1
+        took = f"{t1 - t0:.1f} s"
+        if ok:
+            self.on_event(f"✔ {base}: OK ({took}) → {md.name}", "information")
+        else:
+            self.on_event(f"✖ {base}: ERROR ({took}, {reason})", "error")
+
+
+def acquire_lock(queue: Path, runner: str, workdir: Path) -> Path:
+    """Create the runner lock (one runner per queue). Raises RuntimeError if another one is alive."""
+    lock = queue / LOCK_NAME
+    owner = lock_owner(queue)
+    if owner:
+        raise RuntimeError(f"another cli-watcher-monitor --run (PID {owner[0].pid}) is running this queue")
+    lock.unlink(missing_ok=True)  # stale lock from a runner that died
+    me = psutil.Process()
+    info = {
+        "pid": me.pid, "started": me.create_time(), "runner": runner, "workdir": str(workdir),
+        "host": socket.gethostname(), "since": iso(time.time()),
+    }
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise RuntimeError("another runner created the lock at the same time") from None
+    with os.fdopen(fd, "wb") as f:
+        f.write((json.dumps(info, indent=2) + "\n").encode("utf-8"))
+    return lock
+
+
+def release_lock(lock: Path | None) -> None:
+    if lock is None:
+        return
+    info = read_json_file(lock)
+    if info and info.get("pid") == os.getpid():
+        lock.unlink(missing_ok=True)
+
+
+def prepare_runner(queue: Path, runner: Runner, workdir: Path | None, force: bool) -> QueueRunner:
+    """Startup checks of --run (same rules as the watchers). Exits with code 1 on failure."""
+
+    def fail(msg: str) -> None:
+        typer.secho(f"Error: {msg}", fg="red", err=True)
+        raise typer.Exit(1)
+
+    kind = runner.value
+    if kind == "auto":
+        name = queue.name.lower()
+        kind = "codex" if ("gpt" in name or "codex" in name) else "claude" if "claude" in name else ""
+        if not kind:
+            fail(f"cannot tell the runner from the queue name '{queue.name}': use --runner codex|claude")
+    cli = find_cli(kind)
+    if not cli:
+        fail(f"the {kind} CLI was not found in PATH" + (" (codex.exe/.cmd)" if os.name == "nt" else ""))
+    workdir = (workdir or queue.parent).resolve()
+    if not workdir.is_dir():
+        fail(f"the working directory {workdir} does not exist")
+    if queue.exists() and not queue.is_dir():
+        fail(f"{queue} exists but is a file, not a directory")
+    if not queue.exists():
+        queue.mkdir(parents=True)
+        typer.echo(f"Created queue directory {queue}")
+
+    scanner = QueueScanner(queue, Runner(kind))
+    scanner.detect_watcher()
+    if scanner.watcher is not None and not scanner.watcher_builtin:
+        fail(f"a watcher script (PID {scanner.watcher.pid}) is already running this queue: stop it first")
+    for pidf in queue.glob("*.pid"):
+        try:
+            pid = int(pidf.read_text(encoding="utf-8", errors="replace").strip())
+        except (OSError, ValueError):
+            continue
+        if pid_alive(pid) and (queue / f"{pidf.stem}.json").exists():
+            fail(f"job {pidf.stem} is being run by another process (PID {pid}): stop that runner first. "
+                 f"If PID {pid} is not a codex/claude CLI (PIDs are reused), delete {pidf.name}.")
+
+    pending, invalid = [], []
+    for path in sorted(queue.glob("*.json"), key=lambda p: p.stat().st_mtime):
+        job, error = read_job(path)
+        (invalid if error else pending).append((path.name, error))
+    for name, error in invalid:
+        typer.secho(f"Warning: {name} is not a job ({error}): ignored.", fg="yellow", err=True)
+    done = len(list(queue.glob("*.json.done")))
+    typer.echo(f"Queue {queue}: {done} jobs done, {len(pending)} pending")
+    if pending:
+        names = ", ".join(n for n, _ in pending)
+        if not force:
+            fail(f"there are {len(pending)} pending jobs ({names}). Review them and use --force to run "
+                 "them, or delete them.")
+        typer.secho(f"Warning: {len(pending)} pending jobs ({names}) will run now (--force).", fg="yellow")
+    try:
+        lock = acquire_lock(queue, kind, workdir)
+    except RuntimeError as e:
+        fail(str(e))
+    qr = QueueRunner(queue, kind, cli, workdir)
+    qr.lock_path = lock
+    return qr
 
 
 # --- Formatting ---------------------------------------------------------------
@@ -523,6 +917,28 @@ class ConfigScreen(ModalScreen[int | None]):
         self.dismiss(None)
 
 
+class ConfirmQuitScreen(ModalScreen[bool]):
+    BINDINGS = [
+        Binding("y", "answer(True)", "Yes"),
+        Binding("n", "answer(False)", "No"),
+        Binding("escape", "answer(False)", "No"),
+    ]
+
+    def __init__(self, job: str):
+        super().__init__()
+        self.job = job
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label("⚠  Quit while a job is running?", id="dlg-title")
+            yield Label(Text(f"Job {self.job} will be aborted (the CLI is killed). It stays queued and "
+                             "runs again when you restart with --run --force."))
+            yield Label("[b]y[/] quit and abort   [b]n[/] / [b]Esc[/] keep running", id="dlg-help")
+
+    def action_answer(self, yes: bool) -> None:
+        self.dismiss(yes)
+
+
 # --- Main app -----------------------------------------------------------------
 
 PANES = ["#jobs", "#request", "#output", "#errors"]
@@ -554,7 +970,10 @@ class MonitorApp(App):
     ENABLE_COMMAND_PALETTE = False
     CSS = """
     Screen { background: $background; }
-    #titlebar { height: 1; background: $primary-darken-2; color: $text; padding: 0 1; }
+    #titlebar {
+        height: 1; background: $primary-darken-2; color: $text; padding: 0 1;
+        text-wrap: nowrap; text-overflow: ellipsis;
+    }
     #jobs {
         border: round $primary 60%;
         border-title-color: $primary; border-title-style: bold; border-subtitle-color: $text-muted;
@@ -588,7 +1007,9 @@ class MonitorApp(App):
     #dialog {
         width: 54; height: auto; padding: 1 2; border: thick $accent; background: $surface;
     }
+    #dialog Label { width: 100%; }
     #dlg-title { text-style: bold; color: $accent; margin-bottom: 1; }
+    ConfirmQuitScreen { align: center middle; background: $background 60%; }
     #dlg-help { color: $text-muted; margin-top: 1; }
     """
 
@@ -607,9 +1028,11 @@ class MonitorApp(App):
         *[Binding(str(i), f"pick({i})", show=False) for i in range(1, 10)],
     ]
 
-    def __init__(self, queue: Path, refresh: int, rows: int, runner: Runner):
+    def __init__(self, queue: Path, refresh: int, rows: int, runner: Runner,
+                 job_runner: QueueRunner | None = None):
         super().__init__()
         self.queue = queue
+        self.job_runner = job_runner  # built-in runner (--run), or None when only monitoring
         self.refresh_secs = refresh
         self.rows = rows  # job rows visible at once; the table scrolls through the whole queue
         self.scanner = QueueScanner(queue, runner)
@@ -623,6 +1046,8 @@ class MonitorApp(App):
         self.next_refresh = time.monotonic() + refresh
         self.last_refresh: float | None = None
         self._refreshing = False
+        self._refresh_again = False
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._timer = None
         self._compact: bool | None = None
 
@@ -659,11 +1084,32 @@ class MonitorApp(App):
         self._timer = self.set_interval(self.refresh_secs, self.do_refresh)
         self.set_interval(0.5, self.tick)
         self.call_later(self.do_refresh)
+        self._loop = asyncio.get_running_loop()
+        if self.job_runner is not None:
+            self.job_runner.on_event = self._runner_event
+            self.job_runner.start()
+
+    # -- built-in runner events --
+
+    def _runner_event(self, message: str, severity: str) -> None:
+        """Called from the runner thread. Non-blocking: never waits on the UI loop."""
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._on_runner_event, message, severity)
+        except RuntimeError:  # the UI loop is already closed (app exiting)
+            pass
+
+    def _on_runner_event(self, message: str, severity: str) -> None:
+        self.notify(message, severity=severity, timeout=10 if severity == "error" else 5)
+        self.call_later(self.do_refresh)
 
     # -- refresh cycle --
 
     async def do_refresh(self) -> None:
         if self._refreshing:
+            self._refresh_again = True  # e.g. a runner event during a refresh: refresh once more after
             return
         self._refreshing = True
         self.next_refresh = time.monotonic() + self.refresh_secs
@@ -677,6 +1123,9 @@ class MonitorApp(App):
         self._fill_table()
         self._render_header()
         self.tick()
+        if self._refresh_again:
+            self._refresh_again = False
+            self.call_later(self.do_refresh)
 
     def _collect(self) -> list[Job]:
         self.scanner.detect_watcher()
@@ -751,6 +1200,14 @@ class MonitorApp(App):
             t.append(f" {STATUS_ICON[s]} {counts[s]} ", style=STATUS_STYLE[s])
         if self.last_refresh:
             t.append(f"   refreshed {fmt_ts(self.last_refresh)}", style="dim")
+        if self.job_runner is not None:
+            t.append("   ")
+            t.append(" ▶ RUNNER ", style="bold reverse green")
+            path = str(self.job_runner.workdir)
+            room = self.size.width - t.cell_len - 12
+            if len(path) > room > 12:
+                path = "…" + path[-(room - 1):]
+            t.append(f" workdir {path}", style="dim")
         self.query_one("#titlebar", Static).update(t)
 
     def tick(self) -> None:
@@ -776,11 +1233,21 @@ class MonitorApp(App):
         t.append("  │  ", style="dim")
         t.append("watcher ", style="dim")
         w = sc.watcher
-        if w is None:
+        jr = self.job_runner
+        if jr is not None:
+            t.append("built-in ", style="bold green")
+            t.append(f"⏱ {fmt_dur(now - self.started)}", style="bold green")
+            if jr.current:
+                t.append(f" ▶ {jr.current}", style="bold yellow")
+            else:
+                t.append(" idle", style="dim")
+        elif w is None:
             t.append("not detected", style="yellow")
         else:
             try:
                 if sc.watcher_exact:
+                    if sc.watcher_builtin:
+                        t.append("monitor --run ", style="green")
                     t.append(f"⏱ {fmt_dur(now - w.create_time())}", style="bold green")
                     t.append(f" pid {w.pid}", style="dim")
                 else:
@@ -788,9 +1255,10 @@ class MonitorApp(App):
                     t.append(" (uptime unknown)", style="dim")
             except psutil.Error:
                 t.append("gone", style="red")
-        t.append("  │  ", style="dim")
-        t.append("monitor ", style="dim")
-        t.append(f"⏱ {fmt_dur(now - self.started)}", style="cyan")
+        if jr is None:
+            t.append("  │  ", style="dim")
+            t.append("monitor ", style="dim")
+            t.append(f"⏱ {fmt_dur(now - self.started)}", style="cyan")
         t.append("  │  ", style="dim")
         left = max(0, int(self.next_refresh - time.monotonic() + 0.999))
         t.append(f"⟳ {self.refresh_secs}s", style="bold cyan")
@@ -881,14 +1349,22 @@ class MonitorApp(App):
         grid.add_row("Model", Text(job.model or "—", style="magenta"))
         grid.add_row("Effort", Text(job.effort or "—", style="blue"))
         grid.add_row("Queued", fmt_ts(job.queued, full=True))
-        approx = Text("  (approx.)", style="dim")
+        approx = Text("  (approx.)", style="dim") if not job.exact else Text()
         grid.add_row("Started", Text(fmt_ts(job.start, full=True)) + (approx if job.done and job.start else Text()))
         grid.add_row("Finished", Text(fmt_ts(job.stop, full=True)) + (approx if job.stop else Text()))
         grid.add_row("Duration", Text(fmt_dur(job.duration(time.time())), style="yellow"))
         if job.pid:
-            grid.add_row("PID", f"{job.pid}" + (" (alive)" if job.status == RUNNING else " (dead)"))
+            alive = " (alive)" if job.status == RUNNING else (" (dead)" if not job.done else "")
+            grid.add_row("PID", f"{job.pid}{alive}")
+        meta = job.meta or {}
+        if meta.get("exit_code") is not None:
+            rc = meta["exit_code"]
+            grid.add_row("Exit code", Text(str(rc), style="green" if rc == 0 else "bold red"))
+        if meta:
+            grid.add_row("Runner", Text(f"{meta.get('runner', '?')} on {meta.get('host', '?')}", style="dim"))
+            grid.add_row("Workdir", Text(str(meta.get("workdir", "—")), style="dim"))
         files = [job.job_file.path.name]
-        for f in (job.md, job.err, job.pidf):
+        for f in (job.statusf, job.md, job.err, job.pidf):
             if f:
                 files.append(f"{f.path.name} {fmt_size(f.size)}")
         grid.add_row("Files", Text(" · ".join(files), style="dim"))
@@ -930,9 +1406,21 @@ class MonitorApp(App):
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         # App bindings stay active under the modal: keep keys for the config input.
-        if isinstance(self.screen, ConfigScreen) and action not in ("quit",):
+        if isinstance(self.screen, ModalScreen) and action not in ("quit",):
             return False
         return True
+
+    async def action_quit(self) -> None:
+        jr = self.job_runner
+        if isinstance(self.screen, ConfirmQuitScreen):
+            return  # already asking
+        if jr is not None and jr.current:
+            def answer(yes: bool | None) -> None:
+                if yes:
+                    self.exit()
+            self.push_screen(ConfirmQuitScreen(jr.current), answer)
+            return
+        self.exit()
 
     def action_pane(self, step: int) -> None:
         if self.screen.maximized is not None:
@@ -997,18 +1485,47 @@ cli = typer.Typer(add_completion=False, rich_markup_mode="rich")
 @cli.command()
 def main(
     queue: Path = typer.Argument(
-        ..., help="Queue directory of a gpt-watcher / claude-watcher (e.g. C:\\Claude\\HomeAssistant\\gpt-queue).",
-        exists=True, file_okay=False, dir_okay=True, resolve_path=True,
+        ..., help="Queue directory (e.g. C:\\Claude\\HomeAssistant\\gpt-queue). Created with --run if missing.",
+        file_okay=True, dir_okay=True, resolve_path=True,
     ),
     refresh: int = typer.Option(15, "--refresh", "-r", min=1, max=3600, help="Auto-refresh interval in seconds."),
     jobs: int = typer.Option(5, "--jobs", "-n", min=1, max=50, help="Job rows visible at once; the list scrolls through the whole queue."),
     runner: Runner = typer.Option(
         Runner.auto, "--runner", case_sensitive=False,
-        help="CLI the queue runs (auto: detect from the watcher process, queue name or job models).",
+        help="CLI the queue runs (auto: from the runner process or the queue name: gpt/codex or claude).",
+    ),
+    run: bool = typer.Option(
+        False, "--run",
+        help="Also run the queue (replaces gpt-watcher / claude-watcher) and write a <name>.status per job.",
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="With --run: start even if there are pending jobs, and run them.",
+    ),
+    workdir: Path | None = typer.Option(
+        None, "--workdir", "-w", file_okay=False, resolve_path=True,
+        help="With --run: working directory of the CLI (default: the queue's parent directory).",
     ),
 ) -> None:
-    """Text UI to monitor a gpt-watcher / claude-watcher job queue (read-only)."""
-    MonitorApp(queue, refresh, jobs, runner).run()
+    """Text UI to monitor a codex / claude job queue and, with --run, to run it."""
+    if not run and (force or workdir is not None):
+        typer.secho("Error: --force and --workdir need --run.", fg="red", err=True)
+        raise typer.Exit(2)
+    job_runner = None
+    if run:
+        job_runner = prepare_runner(queue, runner, workdir, force)
+        if runner == Runner.auto:
+            runner = Runner(job_runner.runner)
+    elif not queue.is_dir():
+        typer.secho(f"Error: the queue directory {queue} does not exist.", fg="red", err=True)
+        raise typer.Exit(1)
+    try:
+        MonitorApp(queue, refresh, jobs, runner, job_runner).run()
+    finally:
+        if job_runner is not None:
+            # Abort the running job (its .json stays pending), wait for the cleanup, free the lock.
+            job_runner.stop()
+            job_runner.join(timeout=15)
+            release_lock(job_runner.lock_path)
 
 
 if __name__ == "__main__":

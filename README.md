@@ -1,108 +1,95 @@
 # ai-cli-watcher
 
-Watchers que permeten a Claude Code delegar feines a un altre model a través de la seva CLI, mitjançant una cua de fitxers. Hi ha versió PowerShell (Windows) i bash (Linux) de cada un.
+Eines que permeten a Claude Code delegar feines a un altre model a través de la seva CLI (`codex` o `claude`), mitjançant una cua de fitxers.
+
+- **`cli-watcher-monitor.py`** (recomanat): interfície de text que mostra la cua i, amb `--run`, també l'executa. Un sol terminal, Windows i Linux. Per cada feina escriu un fitxer `<nom>.status` amb l'estat, les hores d'inici i fi i el codi de sortida.
+- **`gpt-watcher` / `claude-watcher`** (`.ps1` i `.sh`, llegat): els runners originals en PowerShell i bash. Segueixen funcionant però no escriuen `.status`; vegeu [Watchers PowerShell i bash](#watchers-powershell-i-bash-llegat).
+
+No facis córrer mai dos runners sobre la mateixa cua (el monitor amb `--run` i un watcher, o dos monitors amb `--run`). El monitor ho detecta i no arrenca, excepte si el watcher s'ha engegat escrivint `.\gpt-watcher.ps1` en una consola oberta i està inactiu: aquest cas no es pot detectar.
 
 ## Sinopsi
 
 ```
-gpt-watcher.ps1    [-Force] [-Queue <dir>] [-WorkDir <dir>]          (Windows, PowerShell 5.1+)
-claude-watcher.ps1 [-Force] [-Queue <dir>] [-WorkDir <dir>]
+uv run cli-watcher-monitor.py QUEUE_DIR [--run [-f|--force] [-w|--workdir DIR]]
+                                        [-r|--refresh SEGONS] [-n|--jobs N] [--runner auto|codex|claude]
 
-gpt-watcher.sh     [-f|--force] [-q|--queue DIR] [-w|--workdir DIR] [-h|--help]   (Linux, bash 4+)
-claude-watcher.sh  [-f|--force] [-q|--queue DIR] [-w|--workdir DIR] [-h|--help]
-
-Vigila el directori de cua i executa la CLI (codex o claude) per cada feina <nom>.json
-que hi aparegui. No acaba mai per si sol: atura'l amb Ctrl+C.
+Mostra les feines de la cua QUEUE_DIR i, amb --run, executa la CLI (codex o claude) per cada
+feina <nom>.json que hi aparegui. Surt amb q (si hi ha una feina en curs, demana confirmació).
 
 Opcions:
-  -Force, -f, --force        Arrenca encara que hi hagi feines pendents (*.json) a la cua
-                             i les processa per ordre. Sense aquesta opció, si hi ha
-                             pendents mostra un avís i surt amb codi 1.
-  -Queue <dir>, -q, --queue DIR
-                             Directori de cua. Es crea si no existeix.
-                             Per defecte: C:\Claude\HomeAssistant\gpt-queue    (gpt-watcher)
-                                          C:\Claude\HomeAssistant\claude-queue (claude-watcher)
-                                          a Linux, $HOME/Claude/HomeAssistant/<gpt|claude>-queue
-  -WorkDir <dir>, -w, --workdir DIR
-                             Directori de treball des d'on s'executa la CLI. Ha d'existir.
-                             Per defecte: C:\Claude\HomeAssistant (Linux: $HOME/Claude/HomeAssistant)
-  -h, --help                 (només .sh) Mostra l'ajuda i surt.
+  --run                 Executa també la cua (substitueix gpt-watcher / claude-watcher) i escriu
+                        un <nom>.status per feina. Sense --run només llegeix la cua.
+  -f, --force           (amb --run) Arrenca encara que hi hagi feines pendents (*.json) i les
+                        processa per ordre. Sense aquesta opció, si n'hi ha surt amb codi 1.
+  -w, --workdir DIR     (amb --run) Directori de treball de la CLI. Ha d'existir.
+                        Per defecte: el directori pare de la cua.
+  --runner auto|codex|claude
+                        CLI de la cua. Amb auto es dedueix del nom de la cua (gpt o codex →
+                        codex, claude → claude) o, sense --run, del runner que hi corre.
+  -r, --refresh SEGONS  Interval de refresc de la pantalla (per defecte 15; també amb /).
+  -n, --jobs N          Files de feines visibles alhora (per defecte 5); la llista es desplaça.
 
 Codis de sortida en arrencar:
-  1  Feines pendents sense -Force, la cua és un fitxer, el directori de treball no
-     existeix, o no es troba la CLI (codex/claude) o python3 (només .sh).
-  2  (només .sh) Opció desconeguda o sense valor.
-  Si arrenca bé, el watcher no acaba fins a Ctrl+C.
+  1  Feines pendents sense --force, la cua és un fitxer o no existeix (sense --run), el
+     directori de treball no existeix, no es troba la CLI, o ja hi ha un runner a la cua.
+  2  Opció desconeguda, o --force / --workdir sense --run.
 ```
 
-| Script | CLI que executa | Cua per defecte |
+| Cua | CLI | Valors de `model` i `effort` |
 |---|---|---|
-| `gpt-watcher.ps1` / `gpt-watcher.sh` | `codex` (OpenAI) | `C:\Claude\HomeAssistant\gpt-queue` / `$HOME/Claude/HomeAssistant/gpt-queue` |
-| `claude-watcher.ps1` / `claude-watcher.sh` | `claude` (Claude Code) | `C:\Claude\HomeAssistant\claude-queue` / `$HOME/Claude/HomeAssistant/claude-queue` |
-
-Els quatre funcionen igual: només canvien la CLI, el directori de cua i els valors acceptats a `model` i `effort`.
+| `...\gpt-queue` | `codex` (OpenAI) | `codex exec --model` i `model_reasoning_effort` |
+| `...\claude-queue` | `claude` (Claude Code) | `claude --model` i `claude --effort` (`low`, `medium`, `high`, `xhigh`, `max`) |
 
 ## Requisits
 
-Windows (`.ps1`):
-
-- PowerShell 5.1 o superior.
-- La CLI corresponent al `PATH` com a executable real (`codex.exe`/`codex.cmd`, `claude.exe`/`claude.cmd`), amb sessió iniciada. La instal·lació amb npm o l'instal·lador oficial ja ho deixa així.
-
-Linux (`.sh`):
-
-- bash 4 o superior i `python3` (per llegir els fitxers JSON de la cua). Ubuntu els porta de sèrie.
-- La CLI corresponent al `PATH`, amb sessió iniciada. A WSL cal una instal·lació Linux de la CLI: el `codex` de npm instal·lat a Windows apareix al `PATH` de WSL però llança el binari de Windows i falla.
+- [uv](https://docs.astral.sh/uv/). Les dependències del monitor (typer, textual, psutil) van declarades dins l'script i uv les instal·la soles la primera vegada.
+- Amb `--run`, la CLI corresponent al `PATH` amb sessió iniciada. A Windows ha de ser un executable real (`codex.exe`/`codex.cmd`, `claude.exe`/`claude.cmd`), com deixa la instal·lació amb npm o l'instal·lador oficial. A WSL cal una instal·lació Linux de la CLI: el `codex` de npm instal·lat a Windows apareix al `PATH` de WSL però llança el binari de Windows i falla.
 
 ## Execució
 
 ```powershell
-.\gpt-watcher.ps1               # arrencada normal
-.\gpt-watcher.ps1 -Force        # arrenca encara que hi hagi feines pendents i les processa
-.\claude-watcher.ps1 -Queue D:\proves\cua -WorkDir D:\proves
+uv run cli-watcher-monitor.py C:\Claude\HomeAssistant\gpt-queue --run           # monitor + runner
+uv run cli-watcher-monitor.py C:\Claude\HomeAssistant\gpt-queue --run --force   # i processa les pendents
+uv run cli-watcher-monitor.py D:\proves\claude-queue --run -w D:\proves
+uv run cli-watcher-monitor.py C:\Claude\HomeAssistant\gpt-queue                 # només mirar
 ```
 
 ```bash
-./gpt-watcher.sh
-./gpt-watcher.sh --force
-./claude-watcher.sh --queue ~/proves/cua --workdir ~/proves
+uv run cli-watcher-monitor.py ~/Claude/HomeAssistant/gpt-queue --run
 ```
 
-### Si PowerShell no deixa executar scripts
+## Pantalla
 
-Si apareix l'error `... no se puede cargar porque la ejecución de scripts está deshabilitada en este sistema` (o l'equivalent en anglès), la política d'execució ho bloqueja. Hi ha dues opcions:
+A dalt, totes les feines de la cua, de la més nova a la més antiga, en una taula de N files visibles que es desplaça: estat (`OK`, `ERR`, `RUNNING` o `QUEUED`), model, effort, hora d'entrada, inici, fi i durada. A sota, la petició de la feina seleccionada (esquerra) i el `.md` i el `.err` (dreta). Amb `--run`, la barra superior mostra `▶ RUNNER` i el directori de treball, i cada inici i final de feina surt com a notificació (`▶ Started`, `✔ ... OK`, `✖ ... ERROR`). La línia d'estat mostra el runner, el temps que fa que corre el watcher (i la feina en curs), l'interval de refresc i la ruta de la cua.
 
-Només per a aquesta execució, sense canviar res al sistema:
+| Tecla | Acció |
+|---|---|
+| `↑` `↓` `PgUp` `PgDn` `Home` `End`, `1`-`9` | Tria feina (la llista es desplaça per tota la cua) |
+| `Tab`, `←` `→` | Canvia de panell; `↑` `↓` `PgUp` `PgDn` `Home` `End` desplacen el panell actiu |
+| `z` / `Esc` | Amplia el panell actiu / torna |
+| `m` | Markdown renderitzat o text en brut |
+| `r` | Refresca ara |
+| `/` | Configuració: interval de refresc en segons (només per a la sessió) |
+| `q` | Surt. Amb una feina en curs demana confirmació: `y` atura la CLI i la feina queda pendent |
 
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\gpt-watcher.ps1
-powershell.exe -ExecutionPolicy Bypass -File .\claude-watcher.ps1
-powershell.exe -ExecutionPolicy Bypass -File .\claude-watcher.ps1 -Force
-```
-
-De manera permanent per a l'usuari actual (permet scripts locals, i signats si vénen d'Internet):
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-```
+Sense `--run`, el monitor també detecta qui executa la cua: un altre monitor amb `--run` (pel fitxer de bloqueig) o un watcher llegat (pel procés que té el nom de l'script a la línia d'ordres, com `powershell -File .\gpt-watcher.ps1` o `./gpt-watcher.sh`). Un watcher engegat escrivint `.\gpt-watcher.ps1` en una consola oberta només es detecta mentre té una feina en curs, i no se'n sap el temps d'execució.
 
 ## Directori de cua
 
-En arrencar, el watcher fa aquestes comprovacions sobre el directori de cua:
+En arrencar amb `--run`, el monitor fa aquestes comprovacions abans d'obrir la pantalla:
 
 | Estat de la ruta | Comportament |
 |---|---|
-| No existeix | Es crea el directori i s'arrenca el watcher. |
-| Existeix sense feines pendents | Mostra el recompte de feines fetes i pendents i s'arrenca el watcher. |
-| Existeix amb feines pendents | Avís amb els noms dels `.json` pendents i sortida amb codi `1`. Amb `-Force`/`--force` es mostra l'avís, s'arrenca i es processen. |
-| Existeix amb `.json` que no són feines | Avís per cada fitxer (`El fitxer <nom> no és una feina (...): s'ignora`), no compten com a pendents i no bloquegen l'arrencada. |
+| No existeix | Es crea el directori i arrenca. |
+| Existeix sense feines pendents | Mostra el recompte de feines fetes i pendents i arrenca. |
+| Existeix amb feines pendents | Avís amb els noms dels `.json` pendents i sortida amb codi `1`. Amb `--force` es mostra l'avís, arrenca i es processen. |
+| Existeix amb `.json` que no són feines | Avís per cada fitxer; no compten com a pendents i no bloquegen l'arrencada. |
+| Ja hi corre un runner (un altre `--run`, un watcher, o un `.pid` d'un procés viu) | Error i sortida amb codi `1`. |
 | Existeix però és un fitxer | Error i sortida amb codi `1`. |
 
-Només compten com a pendents els fitxers `*.json` que són feines vàlides (JSON correcte amb `model`, `effort` i `prompt`). L'històric (`*.json.done`, `*.md`, `*.err`) i qualsevol `*.pid` que hagi quedat d'una execució interrompuda es conserven al directori i no bloquegen l'arrencada, així es pot revisar més tard. Cap directori existent no s'esborra ni se sobreescriu mai.
+Només compten com a pendents els fitxers `*.json` que són feines vàlides. L'històric (`*.json.done`, `*.status`, `*.md`, `*.err`) es conserva i no bloqueja l'arrencada. Cap directori existent no s'esborra ni se sobreescriu mai.
 
-**Contracte de la cua:** el directori de cua només conté feines, el seu històric i, mentre una feina s'executa, el seu `<nom>.pid` (vegeu [Fitxer .pid](#fitxer-pid-feina-en-curs)). Els fitxers que la feina necessiti (dades, diffs, prompts llargs) van a un altre lloc dins del directori de treball, o a la cua només si no tenen extensió `.json`. Un `.json` que no és una feina (per exemple un fitxer de dades deixat a la cua per error) no atura el watcher: s'avisa un cop i s'ignora, tant a l'arrencada com durant la vigilància. Aquesta tolerància és una xarxa de seguretat, no una invitació a guardar-hi dades.
-
-La comprovació de pendents evita executar per error feines antigues que s'havien quedat a la cua. Si són vàlides, arrenca amb `-Force`/`--force` i es processaran per ordre.
+**Contracte de la cua:** el directori de cua només conté feines, el seu històric, el `<nom>.pid` de la feina en curs i el bloqueig del runner. Els fitxers que la feina necessiti (dades, diffs, prompts llargs) van a un altre lloc dins del directori de treball, o a la cua només si no tenen extensió `.json`. Un `.json` que no és una feina s'avisa un cop i s'ignora fins que canviï; és una xarxa de seguretat, no una invitació a guardar-hi dades.
 
 ## Format d'una feina
 
@@ -116,56 +103,69 @@ Un fitxer `<nom>.json` dins la cua, codificat en UTF-8:
 }
 ```
 
-| Camp | `gpt-watcher` | `claude-watcher` |
-|---|---|---|
-| `model` | Model que rep `codex exec --model`. | Model que rep `claude --model` (per exemple `claude-sonnet-5`, `claude-opus-5`). |
-| `effort` | Valor de `model_reasoning_effort`. | Valor de `claude --effort`: `low`, `medium`, `high`, `xhigh` o `max`. |
-| `prompt` | Petició completa que s'envia a la CLI. | Igual. |
+`model` i `effort` només poden contenir lletres, xifres i `._:/@+[]-`, perquè arriben a la línia d'ordres de la CLI. El `prompt` no té cap límit: s'envia a la CLI per l'entrada estàndard, en UTF-8.
 
-Les feines es processen per ordre de data de modificació, cada 5 segons. La CLI s'executa amb el directori de treball indicat a `-WorkDir`/`--workdir`. El prompt s'envia a la CLI per l'entrada estàndard, no per la línia d'ordres, així no hi ha límit de mida ni problemes amb les cometes.
+Les feines es processen d'una en una, per ordre de data de modificació, mirant la cua cada 5 segons. Un `<nom>.json` que no és JSON vàlid, és buit, li falta algun camp o té caràcters no permesos surt a la pantalla com a `ERR`, es notifica un cop i es deixa a la cua sense reanomenar; es torna a provar quan es modifica.
 
-Si un `<nom>.json` no és JSON vàlid, és buit o li falta algun dels camps `model`, `effort` o `prompt`, el watcher mostra una línia d'error en pantalla (`ERROR feina <nom> ignorada: ...`, o un avís si ja hi era en arrencar) i el salta sense aturar-se ni reanomenar-lo. El fitxer es queda a la cua i només es torna a provar si es modifica, així no es repeteix l'avís cada 5 segons. Un fitxer que encara s'està escrivint pot provocar un avís puntual i es processa igualment quan l'escriptura acaba.
-
-`claude-watcher` crida `claude -p` (mode no interactiu). En aquest mode, les eines que necessitarien confirmació es deneguen; si la feina ha de modificar fitxers, cal configurar els permisos a la `settings.json` del directori de treball.
-
-## Missatges en pantalla
-
-Per cada feina el watcher mostra dues línies, amb hora:
-
-```
-[10:32:05] Inici feina revisio-v3 (gpt-5.5/high)
-[10:34:41] Fi feina revisio-v3: OK (156,2 s) -> revisio-v3.md
-[10:34:41] Inici feina prova (model-inexistent/low)
-[10:34:43] Fi feina prova: ERROR (2,2 s, codi de sortida 1, revisa prova.err)
-```
-
-El resultat es decideix pel codi de sortida de la CLI: `0` és `OK` (en verd) i qualsevol altre valor és `ERROR` (en vermell). Tant `codex` com `claude` tornen `1` quan la feina falla (model inexistent, error d'API, sessió no iniciada). Si la CLI acaba amb `0` però no ha escrit el `<nom>.md`, també es marca com a `ERROR`. Així es pot seguir el progrés sense mirar la cua.
+`claude` s'executa amb `claude -p` (mode no interactiu): les eines que necessitarien confirmació es deneguen, així que si la feina ha de modificar fitxers cal configurar els permisos a la `settings.json` del directori de treball.
 
 ## Fitxers de sortida
 
-Per cada `<nom>.json` processat apareixen a la cua, en UTF-8:
-
 | Fitxer | Contingut |
 |---|---|
+| `<nom>.status` | Estat de la feina en JSON (vegeu [Fitxer .status](#fitxer-status)). Si no existeix, la feina és a la cua. |
 | `<nom>.md` | Resposta final del model. Amb `codex`, si la feina falla no es crea. Amb `claude`, si la feina falla conté el missatge d'error de la CLI. |
-| `<nom>.err` | Sortida d'error estàndard de la CLI, tal com l'escriu. Amb `codex` sempre té contingut: hi va el registre de la sessió (model, ordres executades, resposta, tokens) i, si falla, la línia `ERROR: ...` al final. Amb `claude` és buit si tot ha anat bé. |
-| `<nom>.json.done` | La feina original, reanomenada per marcar-la com a consumida. |
-| `<nom>.pid` | Només existeix mentre la feina s'executa: conté el PID del procés de la CLI. S'esborra quan la CLI acaba, abans de crear el `.json.done`. |
+| `<nom>.err` | Sortida d'error estàndard de la CLI, tal com l'escriu. Amb `codex` sempre té contingut (el registre de la sessió) i, si falla, la línia `ERROR: ...` al final. Amb `claude` és buit si tot ha anat bé. |
+| `<nom>.json.done` | La feina original, reanomenada quan acaba. |
+| `<nom>.pid` | Només mentre la feina s'executa: el PID del procés de la CLI (vegeu [Fitxer .pid](#fitxer-pid)). |
+| `.monitor-runner.lock` | Només mentre hi ha un monitor amb `--run`: PID i dades del runner. Impedeix que n'arrenqui un segon. |
 
-### Fitxer .pid (feina en curs)
+### Fitxer .status
 
-Just després de la línia `Inici feina <nom>`, el watcher escriu `<nom>.pid` a la cua amb el PID del procés de la CLI (`codex` o `claude`) que està processant la feina. És el PID del procés fill, no el del watcher: a Windows, si la CLI és un `codex.cmd`/`claude.cmd` de npm, és el PID del `cmd.exe` que l'embolcalla, que viu exactament tant com la CLI. El fitxer conté només el número, en una sola línia i sense BOM (el `.sh` hi afegeix un salt de línia final). Quan la CLI acaba, el watcher esborra el `.pid` i tot seguit reanomena el `.json` a `.json.done`: si existeix `<nom>.json.done`, ja no existeix `<nom>.pid`.
+JSON en UTF-8, escrit de manera atòmica (fitxer temporal i reanomenat), així que qui el llegeix mai no en veu una versió a mitges:
 
-Amb això un observador extern pot saber en quin estat és una feina sense mirar la pantalla del watcher:
+```json
+{
+  "job": "revisio-v3",
+  "state": "OK",
+  "reason": "exit code 0",
+  "exit_code": 0,
+  "queued": "2026-11-10T08:33:07+01:00",
+  "start": "2026-11-10T08:49:29+01:00",
+  "stop": "2026-11-10T08:55:39+01:00",
+  "duration_s": 370.2,
+  "runner": "codex",
+  "model": "gpt-5.5",
+  "effort": "high",
+  "pid": 12345,
+  "cli": "C:\\Users\\...\\npm\\codex.cmd",
+  "workdir": "C:\\Claude\\HomeAssistant",
+  "host": "PC",
+  "runner_pid": 6789,
+  "output": "revisio-v3.md",
+  "errors": "revisio-v3.err"
+}
+```
 
-| Fitxers presents | Estat |
+| Camp | Valor |
 |---|---|
-| `<nom>.json`, sense `.pid` | Pendent: encara no ha començat, el watcher no corre, o l'ha rebutjat per invàlida (mira la pantalla del watcher). |
-| `<nom>.json` i `<nom>.pid` amb un PID que existeix | En curs: la CLI encara treballa. |
-| `<nom>.json` i `<nom>.pid` amb un PID que no existeix | El watcher va morir de cop a mig fer (finestra tancada, `kill -9`, apagada). La feina segueix pendent i es tornarà a executar en arrencar amb `-Force`/`--force`, que sobreescriurà el `.pid`. |
-| `<nom>.json.done` | Acabada: mira la línia `Fi feina` o el `<nom>.md`. |
+| `state` | `RUNNING` mentre la CLI treballa; `OK` o `ERR` quan acaba. |
+| `reason` | `exit code 0`, `exit code N`, `exit code 0 but <nom>.md was not written` o `cannot start the CLI: ...`. |
+| `exit_code` | Codi de sortida de la CLI (`null` mentre corre). `OK` vol dir codi `0` i `<nom>.md` escrit. |
+| `queued`, `start`, `stop` | Hores ISO 8601 amb zona: entrada a la cua (data del `.json`), inici i fi de la CLI. |
+| `duration_s` | Durada en segons. |
+| `pid`, `runner_pid`, `host` | PID de la CLI, PID del monitor que l'executa i nom de la màquina. |
+| `inferred` | Opcional. `true` en un `.status` generat després a partir dels fitxers (feines antigues dels watchers llegats): el monitor marca les hores com a aproximades. |
 
-Per comprovar si el PID existeix:
+Ordre dels canvis: en començar s'escriu el `.status` (`RUNNING`) i el `.pid`; en acabar s'esborra el `.pid`, s'escriu el `.status` final i es reanomena el `.json` a `.json.done`. Per tant, si existeix `<nom>.json.done`, el `.status` ja és final.
+
+Si es surt del monitor amb una feina en curs, la CLI s'atura, s'esborren el `.pid` i el `.status` i el `.json` queda pendent: es tornarà a executar en arrencar amb `--run --force`. Si el monitor mor de cop (finestra tancada, procés matat, apagada), el `.status` es queda a `RUNNING` i el `.json` pendent. La CLI s'executa desacoblada de la finestra i pot seguir treballant fins que acabi: mentre el seu `pid` existeixi, la feina surt com a `RUNNING` i un nou `--run` no arrenca; quan el procés ja no existeix, surt com a `QUEUED` amb l'avís `stale` i es tornarà a executar amb `--force`.
+
+Les feines acabades sense `.status` (fetes amb els watchers llegats) també es mostren, però l'estat i les hores es dedueixen dels fitxers i surten marcats com a aproximats: amb `codex` és `OK` si hi ha `.md`; amb `claude`, si el `.md` té contingut, el `.err` és buit i el `.md` no és un missatge d'error curt de la CLI (comença per `API Error` o `Error:`). L'inici és la data de creació del `.err` (a Linux no està disponible) i la fi, l'última modificació del `.md` o el `.err`.
+
+### Fitxer .pid
+
+Mentre la CLI treballa, `<nom>.pid` conté el seu PID: només el número, en una línia. És el PID del procés fill: a Windows, si la CLI és un `codex.cmd`/`claude.cmd` de npm, és el del `cmd.exe` que l'embolcalla, que viu tant com la CLI. Per comprovar si encara existeix:
 
 ```powershell
 Get-Process -Id (Get-Content C:\Claude\HomeAssistant\gpt-queue\revisio-v3.pid) -ErrorAction SilentlyContinue
@@ -175,49 +175,25 @@ Get-Process -Id (Get-Content C:\Claude\HomeAssistant\gpt-queue\revisio-v3.pid) -
 kill -0 "$(cat ~/Claude/HomeAssistant/gpt-queue/revisio-v3.pid)" 2>/dev/null && echo "en curs" || echo "el procés no existeix"
 ```
 
-Si s'atura el watcher amb Ctrl+C a mitja feina, tant el watcher com la CLI acaben i el `.pid` s'esborra; el `.json` queda pendent perquè no s'ha arribat a reanomenar. A Linux, un `kill` del watcher fa el mateix (el trap de sortida atura la CLI). A Windows, si es mata el procés del watcher amb `Stop-Process` o des del Gestor de tasques, la CLI continua i el `.pid` es queda amb el seu PID, encara viu: la taula anterior segueix sent certa. Els PID es reutilitzen: un `.pid` antic podria apuntar per casualitat a un altre procés, així que, si cal, comprova que el procés sigui realment la CLI (`Get-Process` mostra el nom; a Linux, `ps -o comm= -p <pid>`).
-
-## Monitor de la cua (`cli-watcher-monitor.py`)
-
-Interfície de text per seguir una cua des d'una altra finestra. Només llegeix: no toca cap fitxer de la cua. Cal [uv](https://docs.astral.sh/uv/); les dependències (typer, textual, psutil) van declarades dins l'script i uv les instal·la soles.
-
-```
-uv run cli-watcher-monitor.py QUEUE_DIR [--refresh|-r SEGONS] [--jobs|-n N] [--runner auto|codex|claude]
-```
-
-Llista totes les feines de la cua, de la més nova a la més antiga, en una taula de N files visibles (5 per defecte) que es desplaça amb les fletxes. Per cada feina mostra l'estat (`OK`, `ERR`, `RUNNING` o `QUEUED`), l'hora d'entrada, inici, fi i durada. A sota, la petició de la feina seleccionada (esquerra) i el `.md` i el `.err` (dreta). La línia d'estat mostra el runner, el temps que fa que corre el watcher, el temps del monitor, l'interval de refresc i la ruta de la cua.
-
-| Tecla | Acció |
-|---|---|
-| `↑` `↓` `PgUp` `PgDn` `Home` `End`, `1`-`9` | Tria feina (la llista es desplaça per tota la cua) |
-| `Tab`, `←` `→` | Canvia de panell; `↑` `↓` `PgUp` `PgDn` `Home` `End` desplacen el panell actiu |
-| `z` / `Esc` | Amplia el panell actiu / torna |
-| `m` | Markdown renderitzat o text en brut |
-| `r` | Refresca ara |
-| `/` | Configuració: interval de refresc en segons (només per a la sessió) |
-| `q` | Surt |
-
-Els watchers no guarden el codi de sortida, així que el monitor dedueix l'estat de les feines acabades a partir dels fitxers, seguint la secció [Fitxers de sortida](#fitxers-de-sortida). Amb `codex` és `OK` si hi ha `.md`. Amb `claude` és `OK` si el `.md` té contingut, el `.err` és buit i el `.md` no és un missatge d'error curt de la CLI (menys d'1 KB que comença per `API Error` o `Error:`). Les hores d'inici i de fi d'una feina acabada també són aproximades: l'inici és la data de creació del `.err` (a Linux no està disponible i surt `—`) i la fi, l'última modificació del `.md` o el `.err`. Un `.json` amb `.pid` d'un procés que ja no existeix surt com a `QUEUED` amb l'avís `stale pid`, i un `.json` que no és una feina surt com a `ERR`.
-
-El watcher es detecta pel procés que té el nom de l'script a la línia d'ordres (`powershell -File .\gpt-watcher.ps1`, `./gpt-watcher.sh`) i serveix la mateixa cua. Si s'ha arrencat escrivint `.\gpt-watcher.ps1` en una consola oberta, només es detecta mentre hi ha una feina en curs i no se'n sap el temps d'execució.
+Els PID es reutilitzen: un `.pid` antic podria apuntar per casualitat a un altre procés. Si cal, comprova'n el nom (`Get-Process` el mostra; a Linux, `ps -o comm= -p <pid>`).
 
 ## Ús des de Claude Code
 
-1. Claude escriu un `<nom>.json` a la cua del watcher que toqui.
-2. Espera que aparegui `<nom>.json.done`. Mentrestant, `<nom>.pid` indica que la feina és en curs: si hi és i el PID que conté existeix, la CLI encara treballa i val la pena seguir esperant.
-3. Comprova que la línia `Fi feina <nom>` digui `OK` (o que existeixi `<nom>.md`) i llegeix `<nom>.md` amb la resposta.
+1. Claude escriu un `<nom>.json` a la cua.
+2. Espera que `<nom>.status` digui `OK` o `ERR` (o que aparegui `<nom>.json.done`). Mentrestant, si `state` és `RUNNING` i el `pid` existeix, la CLI encara treballa.
+3. Si és `OK`, llegeix `<nom>.md`. Si és `ERR`, `reason` diu el motiu i el final de `<nom>.err` el detall.
 
-Si al cap d'uns 20 segons d'haver escrit el `.json` no hi ha ni `<nom>.pid` ni `<nom>.json.done`, el watcher no corre o ha rebutjat la feina: mira la pantalla del watcher abans de seguir esperant. Si hi ha `<nom>.pid` però el PID que conté no existeix, el watcher va morir a mig fer i cal tornar-lo a arrencar amb `-Force`/`--force`. A les rutes de Windows dins del `prompt`, vigila les seqüències d'escapament (`\a`, `\b`, `\n`, `\t`...): una ruta com `gpt-queue\aicw-...` escrita en una cadena no literal acaba amb un caràcter de control en lloc de `\a`. Fer servir barres `/` a les rutes ho evita.
+Si al cap d'uns 20 segons d'haver escrit el `.json` no hi ha `<nom>.status`, el runner no corre o ha rebutjat la feina (mira la pantalla del monitor). A les rutes de Windows dins del `prompt`, vigila les seqüències d'escapament (`\a`, `\b`, `\n`, `\t`...): una ruta com `gpt-queue\aicw-...` escrita en una cadena no literal acaba amb un caràcter de control en lloc de `\a`. Fer servir barres `/` a les rutes ho evita.
 
 ### Exemple d'instruccions a CLAUDE.md
 
-Per fer que Claude Code delegui feines a GPT de manera autònoma, afegeix una secció com aquesta al `CLAUDE.md` del projecte. Ajusta la ruta de la cua si has arrencat el watcher amb `-Queue`.
+Per fer que Claude Code delegui feines a GPT de manera autònoma, afegeix una secció com aquesta al `CLAUDE.md` del projecte. Ajusta la ruta de la cua a la que faci servir el monitor.
 
 ````markdown
-## Delegar feines a GPT (codex) via el watcher
+## Delegar feines a GPT (codex) via la cua
 
 Quan et demani una segona opinió, una revisió o una anàlisi de GPT, delega-la
-al `gpt-watcher` en comptes de respondre-la tu:
+a la cua de codex en comptes de respondre-la tu:
 
 1. Escriu un fitxer de feina a `C:/Claude/HomeAssistant/gpt-queue/<nom>.json` amb
    l'eina Write (així queda en UTF-8; `Set-Content` o `>` de PowerShell no ho
@@ -231,26 +207,53 @@ al `gpt-watcher` en comptes de respondre-la tu:
    }
    ```
 
-   El codex s'executa al directori de treball del watcher, així que al `prompt`
+   El codex s'executa al directori de treball del runner, així que al `prompt`
    pots referir-te als fitxers per ruta relativa. Si has de passar-li molt text
    o dades, deixa-ho en un fitxer a part dins del directori de treball (mai un
    altre `.json` a la cua) i esmenta la ruta al `prompt`.
 
-2. Espera que aparegui `C:/Claude/HomeAssistant/gpt-queue/<nom>.json.done`.
-   Mentre la feina s'executa hi ha un `<nom>.pid` a la cua amb el PID del procés
-   de codex; el watcher l'esborra quan codex acaba, abans de crear el `.json.done`.
-   Fes-lo servir per decidir si has de seguir esperant:
+2. Espera llegint `C:/Claude/HomeAssistant/gpt-queue/<nom>.status` (JSON):
 
-   - Hi ha `<nom>.pid` i el PID existeix (a PowerShell,
-     `Get-Process -Id (Get-Content <nom>.pid)` no dóna error): la feina és en
-     curs, segueix esperant sense límit de temps.
-   - Hi ha `<nom>.pid` però el PID no existeix: el watcher ha mort a mig fer.
-     Atura't i avisa'm perquè el torni a arrencar amb `-Force`.
-   - Al cap d'uns 20 segons no hi ha ni `<nom>.pid` ni `<nom>.json.done`:
-     atura't i avisa'm, el watcher no corre o ha rebutjat la feina.
+   - `"state": "RUNNING"` i el `pid` existeix (a PowerShell,
+     `Get-Process -Id <pid>` no dóna error): la feina és en curs, segueix
+     esperant sense límit de temps.
+   - `"state": "RUNNING"` però el `pid` no existeix: el runner ha mort a mig fer.
+     Atura't i avisa'm perquè el torni a arrencar amb `--run --force`.
+   - Al cap d'uns 20 segons encara no hi ha `<nom>.status`: atura't i avisa'm,
+     el runner no corre o ha rebutjat la feina.
 
-3. Si existeix `<nom>.md`, llegeix-lo: és la resposta de GPT. Si no hi és, la
-   feina ha fallat; llegeix el final de `<nom>.err` per veure la línia `ERROR:`.
+3. Quan `state` sigui `OK`, llegeix `<nom>.md`: és la resposta de GPT. Si és
+   `ERR`, digues-me el `reason` i la línia `ERROR:` del final de `<nom>.err`.
 ````
 
-El `claude-watcher` funciona igual amb la cua `claude-queue` i els valors de `model` i `effort` de Claude Code.
+Amb la cua `claude-queue` funciona igual, amb els valors de `model` i `effort` de Claude Code.
+
+## Watchers PowerShell i bash (llegat)
+
+Abans del monitor, cada cua tenia el seu watcher en PowerShell (Windows) o bash (Linux). Fan la mateixa feina que `--run` (les mateixes comprovacions en arrencar, `.pid`, `.md`, `.err` i `.json.done`), però **no escriuen `.status`** i no tenen pantalla: mostren una línia per l'inici i una pel final de cada feina. El monitor sense `--run` pot seguir una cua que executi un d'aquests watchers.
+
+```
+gpt-watcher.ps1    [-Force] [-Queue <dir>] [-WorkDir <dir>]          (Windows, PowerShell 5.1+)
+claude-watcher.ps1 [-Force] [-Queue <dir>] [-WorkDir <dir>]
+
+gpt-watcher.sh     [-f|--force] [-q|--queue DIR] [-w|--workdir DIR] [-h|--help]   (Linux, bash 4+ i python3)
+claude-watcher.sh  [-f|--force] [-q|--queue DIR] [-w|--workdir DIR] [-h|--help]
+```
+
+| Script | CLI | Cua per defecte | Directori de treball per defecte |
+|---|---|---|---|
+| `gpt-watcher` | `codex` | `C:\Claude\HomeAssistant\gpt-queue` (Linux: `$HOME/Claude/HomeAssistant/gpt-queue`) | `C:\Claude\HomeAssistant` (Linux: `$HOME/Claude/HomeAssistant`) |
+| `claude-watcher` | `claude` | `C:\Claude\HomeAssistant\claude-queue` (Linux: `$HOME/Claude/HomeAssistant/claude-queue`) | igual |
+
+Codis de sortida en arrencar: `1` amb feines pendents sense `-Force`, la cua és un fitxer, el directori de treball no existeix o no es troba la CLI (o `python3`, només `.sh`); `2` (només `.sh`) amb una opció desconeguda. Si arrenca bé, no acaba fins a Ctrl+C; si s'atura a mitja feina, la CLI també s'atura, el `.pid` s'esborra i el `.json` queda pendent.
+
+Missatges en pantalla:
+
+```
+[10:32:05] Inici feina revisio-v3 (gpt-5.5/high)
+[10:34:41] Fi feina revisio-v3: OK (156,2 s) -> revisio-v3.md
+[10:34:41] Inici feina prova (model-inexistent/low)
+[10:34:43] Fi feina prova: ERROR (2,2 s, codi de sortida 1, revisa prova.err)
+```
+
+Si PowerShell no deixa executar scripts (`... la ejecución de scripts está deshabilitada en este sistema`), executa'ls amb `powershell.exe -ExecutionPolicy Bypass -File .\gpt-watcher.ps1`, o permet scripts locals per a l'usuari actual amb `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`.
