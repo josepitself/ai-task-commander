@@ -177,6 +177,30 @@ kill -0 "$(cat ~/Claude/HomeAssistant/gpt-queue/revisio-v3.pid)" 2>/dev/null && 
 
 Si s'atura el watcher amb Ctrl+C a mitja feina, tant el watcher com la CLI acaben i el `.pid` s'esborra; el `.json` queda pendent perquè no s'ha arribat a reanomenar. A Linux, un `kill` del watcher fa el mateix (el trap de sortida atura la CLI). A Windows, si es mata el procés del watcher amb `Stop-Process` o des del Gestor de tasques, la CLI continua i el `.pid` es queda amb el seu PID, encara viu: la taula anterior segueix sent certa. Els PID es reutilitzen: un `.pid` antic podria apuntar per casualitat a un altre procés, així que, si cal, comprova que el procés sigui realment la CLI (`Get-Process` mostra el nom; a Linux, `ps -o comm= -p <pid>`).
 
+## Monitor de la cua (`cli-watcher-monitor.py`)
+
+Interfície de text per seguir una cua des d'una altra finestra. Només llegeix: no toca cap fitxer de la cua. Cal [uv](https://docs.astral.sh/uv/); les dependències (typer, textual, psutil) van declarades dins l'script i uv les instal·la soles.
+
+```
+uv run cli-watcher-monitor.py QUEUE_DIR [--refresh|-r SEGONS] [--jobs|-n N] [--runner auto|codex|claude]
+```
+
+Llista totes les feines de la cua, de la més nova a la més antiga, en una taula de N files visibles (5 per defecte) que es desplaça amb les fletxes. Per cada feina mostra l'estat (`OK`, `ERR`, `RUNNING` o `QUEUED`), l'hora d'entrada, inici, fi i durada. A sota, la petició de la feina seleccionada (esquerra) i el `.md` i el `.err` (dreta). La línia d'estat mostra el runner, el temps que fa que corre el watcher, el temps del monitor, l'interval de refresc i la ruta de la cua.
+
+| Tecla | Acció |
+|---|---|
+| `↑` `↓` `PgUp` `PgDn` `Home` `End`, `1`-`9` | Tria feina (la llista es desplaça per tota la cua) |
+| `Tab`, `←` `→` | Canvia de panell; `↑` `↓` `PgUp` `PgDn` `Home` `End` desplacen el panell actiu |
+| `z` / `Esc` | Amplia el panell actiu / torna |
+| `m` | Markdown renderitzat o text en brut |
+| `r` | Refresca ara |
+| `/` | Configuració: interval de refresc en segons (només per a la sessió) |
+| `q` | Surt |
+
+Els watchers no guarden el codi de sortida, així que el monitor dedueix l'estat de les feines acabades a partir dels fitxers, seguint la secció [Fitxers de sortida](#fitxers-de-sortida). Amb `codex` és `OK` si hi ha `.md`. Amb `claude` és `OK` si el `.md` té contingut, el `.err` és buit i el `.md` no és un missatge d'error curt de la CLI (menys d'1 KB que comença per `API Error` o `Error:`). Les hores d'inici i de fi d'una feina acabada també són aproximades: l'inici és la data de creació del `.err` (a Linux no està disponible i surt `—`) i la fi, l'última modificació del `.md` o el `.err`. Un `.json` amb `.pid` d'un procés que ja no existeix surt com a `QUEUED` amb l'avís `stale pid`, i un `.json` que no és una feina surt com a `ERR`.
+
+El watcher es detecta pel procés que té el nom de l'script a la línia d'ordres (`powershell -File .\gpt-watcher.ps1`, `./gpt-watcher.sh`) i serveix la mateixa cua. Si s'ha arrencat escrivint `.\gpt-watcher.ps1` en una consola oberta, només es detecta mentre hi ha una feina en curs i no se'n sap el temps d'execució.
+
 ## Ús des de Claude Code
 
 1. Claude escriu un `<nom>.json` a la cua del watcher que toqui.
