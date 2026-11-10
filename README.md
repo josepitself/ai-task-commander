@@ -13,6 +13,7 @@ No facis córrer mai dos runners sobre la mateixa cua. El monitor no arrenca amb
 ```
 uv run cli-watcher-monitor.py QUEUE_DIR [--run [-f|--force] [-w|--workdir DIR]]
                                         [-r|--refresh SEGONS] [-n|--jobs N] [--runner auto|codex|claude]
+uv run cli-watcher-monitor.py -h|--help
 
 Mostra les feines de la cua QUEUE_DIR i, amb --run, executa la CLI (codex o claude) per cada
 feina <nom>.json que hi aparegui. Surt amb q (si hi ha una feina en curs, demana confirmació).
@@ -28,7 +29,9 @@ Opcions:
                         CLI de la cua. Amb auto es dedueix del nom de la cua (gpt o codex →
                         codex, claude → claude) o, sense --run, del runner que hi corre.
   -r, --refresh SEGONS  Interval de refresc de la pantalla (per defecte 15; també amb /).
-  -n, --jobs N          Files de feines visibles alhora (per defecte 5); la llista es desplaça.
+  -n, --jobs N          Files de feines visibles alhora (1-50, per defecte 5; també amb /);
+                        la llista es desplaça.
+  -h, --help            Mostra l'ajuda i surt.
 
 Codis de sortida en arrencar:
   1  Feines pendents sense --force, la cua és un fitxer o no existeix (sense --run), el
@@ -70,7 +73,7 @@ A dalt, totes les feines de la cua, de la més nova a la més antiga, en una tau
 | `z` / `Esc` | Amplia el panell actiu / torna |
 | `m` | Markdown renderitzat o text en brut |
 | `r` | Refresca ara |
-| `/` | Configuració: interval de refresc en segons (només per a la sessió) |
+| `/` | Configuració (només per a la sessió): interval de refresc en segons i files de feines visibles (`-n`). `Tab` canvia de camp, `Enter` aplica |
 | `q` | Surt. Amb una feina en curs demana confirmació: `y` atura la CLI i la feina queda pendent |
 
 Sense `--run`, el monitor detecta pel fitxer de bloqueig el monitor amb `--run` que executa la cua i en mostra el temps d'execució.
@@ -90,7 +93,7 @@ En arrencar amb `--run`, el monitor fa aquestes comprovacions abans d'obrir la p
 
 Només compten com a pendents els fitxers `*.json` que són feines vàlides. L'històric (`*.json.done`, `*.status`, `*.md`, `*.err`) es conserva i no bloqueja l'arrencada. Cap directori existent no s'esborra ni se sobreescriu mai.
 
-**Contracte de la cua:** el directori de cua només conté feines, el seu històric, el `<nom>.pid` de la feina en curs i el bloqueig del runner. Els fitxers que la feina necessiti (dades, diffs, prompts llargs) van a un altre lloc dins del directori de treball, o a la cua només si no tenen extensió `.json`. Un `.json` que no és una feina s'avisa un cop i s'ignora fins que canviï; és una xarxa de seguretat, no una invitació a guardar-hi dades.
+**Contracte de la cua:** el directori de cua només conté feines, el seu històric, el `<nom>.pid` de la feina en curs, i el bloqueig i el `cli-watcher-monitor.pid` del runner. Els fitxers que la feina necessiti (dades, diffs, prompts llargs) van a un altre lloc dins del directori de treball, o a la cua només si no tenen extensió `.json`. Un `.json` que no és una feina s'avisa un cop i s'ignora fins que canviï; és una xarxa de seguretat, no una invitació a guardar-hi dades.
 
 ## Format d'una feina
 
@@ -120,6 +123,7 @@ Les feines es processen d'una en una, per ordre de data de modificació, mirant 
 | `<nom>.json.done` | La feina original, reanomenada quan acaba. |
 | `<nom>.pid` | Només mentre la feina s'executa: el PID del procés de la CLI (vegeu [Fitxer .pid](#fitxer-pid)). |
 | `.monitor-runner.lock` | Només mentre hi ha un monitor amb `--run`: PID i dades del runner. Impedeix que n'arrenqui un segon. |
+| `cli-watcher-monitor.pid` | Només mentre hi ha un monitor amb `--run`: el PID del monitor, només el número en una línia (com el [`<nom>.pid`](#fitxer-pid)). S'esborra en sortir; si el monitor mor de cop es queda, i el següent `--run` el sobreescriu. Per això `cli-watcher-monitor` no és un nom de feina vàlid: un `cli-watcher-monitor.json` surt com a `ERR` i no s'executa. |
 
 ### Fitxer .status
 

@@ -12,6 +12,9 @@
 Usage:
     uv run cli-watcher-monitor.py QUEUE_DIR [--refresh 15] [--jobs 5] [--runner auto|codex|claude]
                                             [--run [--force] [--workdir DIR]]
+    uv run cli-watcher-monitor.py --help    (or -h)
+
+Press / in the UI to change the refresh interval and the visible job rows for the session.
 
 Without --run it only reads the queue (another runner processes it).
 With --run it is also the queue runner (replaces gpt-watcher / claude-watcher): every 5 s it runs the
@@ -22,6 +25,8 @@ CLI for each pending <name>.json, oldest first, one at a time, and writes:
     <name>.md        Answer.   <name>.err   CLI stderr.
     <name>.json.done The job, renamed once it is finished (its .status is final by then).
     .monitor-runner.lock  Lock with the runner's PID while it runs (one runner per queue).
+    cli-watcher-monitor.pid  PID of the monitor while it runs the queue (removed on exit).
+                     So "cli-watcher-monitor" is not a valid job name.
 
 Status shown for each job: from <name>.status when present; for jobs run by the legacy
 PowerShell/bash watchers (no .status) it is inferred from .pid/.md/.err presence and timestamps.
@@ -79,6 +84,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 # model/effort reach the CLI command line (through cmd.exe for npm .cmd shims): plain characters only.
 SAFE_ARG = re.compile(r"^[A-Za-z0-9._:/@+\[\]-]{1,100}$")
 LOCK_NAME = ".monitor-runner.lock"
+MONITOR_PID_NAME = "cli-watcher-monitor.pid"  # PID of the --run monitor, plain text
 POLL_SECONDS = 5
 
 
@@ -153,6 +159,8 @@ def read_text(path: Path, limit: int, tail: bool) -> tuple[str, bool]:
 
 def read_job(path: Path) -> tuple[dict, str | None]:
     """Parse a job file. Returns (job, error) with the same validation as the watchers."""
+    if path.name.split(".", 1)[0] + ".pid" == MONITOR_PID_NAME:
+        return {}, f"reserved job name (its .pid would clash with {MONITOR_PID_NAME})"
     try:
         text = decode(path.read_bytes())
     except OSError as e:
@@ -768,12 +776,26 @@ def acquire_lock(queue: Path, runner: str, workdir: Path) -> Path:
         raise RuntimeError("another runner created the lock at the same time") from None
     with os.fdopen(fd, "wb") as f:
         f.write((json.dumps(info, indent=2) + "\n").encode("utf-8"))
+    # Plain PID file for scripts (same format as <name>.pid). The lock makes us the only runner,
+    # so a leftover one from a monitor that died is simply overwritten.
+    try:
+        (queue / MONITOR_PID_NAME).write_bytes(f"{me.pid}\n".encode())
+    except OSError as e:
+        lock.unlink(missing_ok=True)
+        raise RuntimeError(f"cannot write {MONITOR_PID_NAME} ({e})") from None
     return lock
 
 
 def release_lock(lock: Path | None) -> None:
+    """Remove the runner lock and cli-watcher-monitor.pid, if they are still ours."""
     if lock is None:
         return
+    pidf = lock.parent / MONITOR_PID_NAME
+    try:
+        if pidf.read_text(encoding="utf-8", errors="replace").strip() == str(os.getpid()):
+            pidf.unlink(missing_ok=True)
+    except OSError:
+        pass
     info = read_json_file(lock)
     if info and info.get("pid") == os.getpid():
         lock.unlink(missing_ok=True)
@@ -809,6 +831,8 @@ def prepare_runner(queue: Path, runner: Runner, workdir: Path | None, force: boo
     if scanner.watcher is not None and not scanner.watcher_builtin:
         fail(f"a watcher script (PID {scanner.watcher.pid}) is already running this queue: stop it first")
     for pidf in queue.glob("*.pid"):
+        if pidf.name == MONITOR_PID_NAME:
+            continue  # the lock (checked below) tells whether another monitor is running
         try:
             pid = int(pidf.read_text(encoding="utf-8", errors="replace").strip())
         except (OSError, ValueError):
@@ -883,35 +907,54 @@ def status_text(status: str, frame: int = 0) -> Text:
 # --- Config dialog ------------------------------------------------------------
 
 
-class ConfigScreen(ModalScreen[int | None]):
+class ConfigScreen(ModalScreen[tuple[int, int] | None]):
+    """Session settings: auto-refresh interval and visible job rows. Returns (refresh, rows) or None."""
+
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, current: int):
+    def __init__(self, refresh: int, rows: int):
         super().__init__()
-        self.current = current
+        self.refresh_secs = refresh
+        self.rows = rows
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label("⚙  Configuration", id="dlg-title")
-            yield Label("Auto-refresh interval (seconds)")
-            yield Input(str(self.current), type="integer", id="refresh-input")
-            yield Label("[b]Enter[/] apply   [b]Esc[/] cancel   (not saved, this session only)", id="dlg-help")
+            yield Label("Auto-refresh interval (seconds, 1-3600)")
+            yield Input(str(self.refresh_secs), type="integer", id="refresh-input")
+            yield Label("Job rows visible at once (1-50)")
+            yield Input(str(self.rows), type="integer", id="rows-input")
+            yield Label("[b]Enter[/] apply   [b]Tab[/] next field   [b]Esc[/] cancel\n"
+                        "(not saved, this session only)", id="dlg-help")
 
     def on_mount(self) -> None:
-        inp = self.query_one(Input)
+        inp = self.query_one("#refresh-input", Input)
         inp.focus()
         inp.action_select_all()
 
+    @staticmethod
+    def _value(inp: Input, low: int, high: int) -> int | None:
+        try:
+            value = int(inp.value)
+        except ValueError:
+            return None
+        return value if low <= value <= high else None
+
     @on(Input.Submitted)
     def submit(self, event: Input.Submitted) -> None:
-        try:
-            value = int(event.value)
-        except ValueError:
-            value = 0
-        if not 1 <= value <= 3600:
-            self.query_one("#dlg-help", Label).update("[b red]Enter a whole number between 1 and 3600[/]")
-            return
-        self.dismiss(value)
+        checks = [("#refresh-input", 1, 3600, "Refresh"), ("#rows-input", 1, 50, "Job rows")]
+        values = []
+        for sel, low, high, label in checks:
+            inp = self.query_one(sel, Input)
+            value = self._value(inp, low, high)
+            if value is None:
+                self.query_one("#dlg-help", Label).update(
+                    f"[b red]{label}: enter a whole number between {low} and {high}[/]")
+                inp.focus()
+                inp.action_select_all()
+                return
+            values.append(value)
+        self.dismiss((values[0], values[1]))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1405,8 +1448,8 @@ class MonitorApp(App):
     # -- actions --
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        # App bindings stay active under the modal: keep keys for the config input.
-        if isinstance(self.screen, ModalScreen) and action not in ("quit",):
+        # App bindings stay active under the modal: keep keys for the config inputs (Tab moves between them).
+        if isinstance(self.screen, ModalScreen) and action not in ("quit", "focus_next", "focus_previous"):
             return False
         return True
 
@@ -1463,23 +1506,36 @@ class MonitorApp(App):
         self.notify("Refreshed", timeout=1.5)
 
     def action_config(self) -> None:
-        def apply(value: int | None) -> None:
-            if value is None or value == self.refresh_secs:
+        def apply(values: tuple[int, int] | None) -> None:
+            if values is None:
                 return
-            self.refresh_secs = value
-            if self._timer is not None:
-                self._timer.stop()
-            self._timer = self.set_interval(value, self.do_refresh)
-            self.next_refresh = time.monotonic() + value
-            self.notify(f"Auto-refresh every {value}s", timeout=2)
-            self._render_status(time.time())
+            refresh, rows = values
+            changes = []
+            if refresh != self.refresh_secs:
+                self.refresh_secs = refresh
+                if self._timer is not None:
+                    self._timer.stop()
+                self._timer = self.set_interval(refresh, self.do_refresh)
+                self.next_refresh = time.monotonic() + refresh
+                changes.append(f"auto-refresh every {refresh}s")
+            if rows != self.rows:
+                self.rows = rows
+                table = self.query_one("#jobs", DataTable)
+                table.styles.height = rows + 3  # rows + header + border
+                # Keep the selected job in view once the table has its new height.
+                self.call_after_refresh(lambda: table.move_cursor(row=table.cursor_row, animate=False))
+                changes.append(f"{rows} job rows")
+            if changes:
+                self.notify(", ".join(changes).capitalize(), timeout=2)
+                self._render_status(time.time())
 
-        self.push_screen(ConfigScreen(self.refresh_secs), apply)
+        self.push_screen(ConfigScreen(self.refresh_secs, self.rows), apply)
 
 
 # --- CLI ----------------------------------------------------------------------
 
-cli = typer.Typer(add_completion=False, rich_markup_mode="rich")
+cli = typer.Typer(add_completion=False, rich_markup_mode="rich",
+                  context_settings={"help_option_names": ["-h", "--help"]})
 
 
 @cli.command()
