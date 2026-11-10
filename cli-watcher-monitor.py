@@ -1280,6 +1280,7 @@ class MonitorApp(App):
         if jr is not None:
             t.append("built-in ", style="bold green")
             t.append(f"⏱ {fmt_dur(now - self.started)}", style="bold green")
+            t.append(f" pid {os.getpid()}", style="dim")  # also in <queue>/cli-watcher-monitor.pid
             if jr.current:
                 t.append(f" ▶ {jr.current}", style="bold yellow")
             else:
@@ -1302,6 +1303,7 @@ class MonitorApp(App):
             t.append("  │  ", style="dim")
             t.append("monitor ", style="dim")
             t.append(f"⏱ {fmt_dur(now - self.started)}", style="cyan")
+            t.append(f" pid {os.getpid()}", style="dim")
         t.append("  │  ", style="dim")
         left = max(0, int(self.next_refresh - time.monotonic() + 0.999))
         t.append(f"⟳ {self.refresh_secs}s", style="bold cyan")

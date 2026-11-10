@@ -64,7 +64,7 @@ uv run cli-watcher-monitor.py ~/Claude/HomeAssistant/gpt-queue --run
 
 ## Pantalla
 
-A dalt, totes les feines de la cua, de la més nova a la més antiga, en una taula de N files visibles que es desplaça: estat (`OK`, `ERR`, `RUNNING` o `QUEUED`), model, effort, hora d'entrada, inici, fi i durada. A sota, la petició de la feina seleccionada (esquerra) i el `.md` i el `.err` (dreta). Amb `--run`, la barra superior mostra `▶ RUNNER` i el directori de treball, i cada inici i final de feina surt com a notificació (`▶ Started`, `✔ ... OK`, `✖ ... ERROR`). La línia d'estat mostra el runner, el temps que fa que corre (i la feina en curs), l'interval de refresc i la ruta de la cua.
+A dalt, totes les feines de la cua, de la més nova a la més antiga, en una taula de N files visibles que es desplaça: estat (`OK`, `ERR`, `RUNNING` o `QUEUED`), model, effort, hora d'entrada, inici, fi i durada. A sota, la petició de la feina seleccionada (esquerra) i el `.md` i el `.err` (dreta). Amb `--run`, la barra superior mostra `▶ RUNNER` i el directori de treball, i cada inici i final de feina surt com a notificació (`▶ Started`, `✔ ... OK`, `✖ ... ERROR`). La línia d'estat mostra el runner, el temps que fa que corre (i la feina en curs), el PID del monitor (amb `--run`, el mateix de `cli-watcher-monitor.pid`), l'interval de refresc i la ruta de la cua.
 
 | Tecla | Acció |
 |---|---|
