@@ -1120,7 +1120,7 @@ class MonitorApp(App):
         self.query_one("#output").border_title = "Output"
         self.query_one("#errors").border_title = "Errors"
         self.query_one("#status-keys", Static).update(Text.from_markup(
-            "[b]↑↓ PgUp/PgDn Home/End[/] job  [b]⇥/←→[/] pane  [b]z[/] zoom  "
+            "[b]↑↓ PgUp[/]/[b]PgDn[/] [b]Home[/]/[b]End[/] job  [b]⇥ [/]/[b]←→[/] pane  [b]z[/] zoom  "
             "[b]m[/] md  [b]r[/] refresh  [b]/[/] config  [b]q[/] quit"
         ))
         table.focus()
