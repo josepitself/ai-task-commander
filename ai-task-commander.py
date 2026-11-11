@@ -1042,10 +1042,12 @@ class MonitorApp(App):
     #request-body, #output-body, #errors-body { width: 100%; height: auto; }
     #statusbar { dock: bottom; height: 2; background: $panel; }
     #status-left { width: 1fr; height: 1; padding: 0 1; text-overflow: ellipsis; text-wrap: nowrap; }
+    #status-bottom { height: 1; background: $panel-darken-1; }
     #status-keys {
-        width: 1fr; height: 1; padding: 0 1; color: $text-muted; background: $panel-darken-1;
+        width: 1fr; height: 1; padding: 0 1; color: $text-muted;
         text-overflow: ellipsis; text-wrap: nowrap;
     }
+    #status-md { width: auto; height: 1; padding: 0 1; text-wrap: nowrap; }
     ConfigScreen { align: center middle; background: $background 60%; }
     #dialog {
         width: 54; height: auto; padding: 1 2; border: thick $accent; background: $surface;
@@ -1109,7 +1111,9 @@ class MonitorApp(App):
                     yield Static(id="errors-body")
         with Vertical(id="statusbar"):
             yield Static(id="status-left")
-            yield Static(id="status-keys")
+            with Horizontal(id="status-bottom"):
+                yield Static(id="status-keys")
+                yield Static(id="status-md")
 
     def on_mount(self) -> None:
         self.theme = "tokyo-night"
@@ -1123,6 +1127,7 @@ class MonitorApp(App):
             "[b]↑↓ PgUp[/]/[b]PgDn[/] [b]Home[/]/[b]End[/] job  [b]⇥ [/]/[b]←→[/] pane  [b]z[/] zoom  "
             "[b]m[/] md  [b]r[/] refresh  [b]/[/] config  [b]q[/] quit"
         ))
+        self._render_md_flag()
         table.focus()
         self._timer = self.set_interval(self.refresh_secs, self.do_refresh)
         self.set_interval(0.5, self.tick)
@@ -1498,8 +1503,13 @@ class MonitorApp(App):
 
     def action_toggle_markdown(self) -> None:
         self.markdown = not self.markdown
-        self.notify(f"Markdown rendering {'on' if self.markdown else 'off (raw text)'}", timeout=2)
+        self._render_md_flag()
         self._show_selected(force=True)
+
+    def _render_md_flag(self) -> None:
+        t = Text("Markdown ", style="dim")
+        t.append("ON" if self.markdown else "OFF", style="bold green" if self.markdown else "dim cyan")
+        self.query_one("#status-md", Static).update(t)
 
     async def action_refresh_now(self) -> None:
         if self._timer is not None:
