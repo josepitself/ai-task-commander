@@ -7,12 +7,12 @@
 #   "psutil>=5.9",
 # ]
 # ///
-"""cli-watcher-monitor: text UI to follow a codex / claude job queue, and optionally run it.
+"""ai-task-commander: text UI to follow a codex / claude job queue, and optionally run it.
 
 Usage:
-    uv run cli-watcher-monitor.py QUEUE_DIR [--refresh 15] [--jobs 5] [--runner auto|codex|claude]
-                                            [--run [--force] [--workdir DIR]]
-    uv run cli-watcher-monitor.py --help    (or -h)
+    uv run ai-task-commander.py QUEUE_DIR [--refresh 15] [--jobs 5] [--runner auto|codex|claude]
+                                          [--run [--force] [--workdir DIR]]
+    uv run ai-task-commander.py --help    (or -h)
 
 Press / in the UI to change the refresh interval and the visible job rows for the session.
 
@@ -25,8 +25,8 @@ CLI for each pending <name>.json, oldest first, one at a time, and writes:
     <name>.md        Answer.   <name>.err   CLI stderr.
     <name>.json.done The job, renamed once it is finished (its .status is final by then).
     .monitor-runner.lock  Lock with the runner's PID while it runs (one runner per queue).
-    cli-watcher-monitor.pid  PID of the monitor while it runs the queue (removed on exit).
-                     So "cli-watcher-monitor" is not a valid job name.
+    ai-task-commander.pid  PID of the monitor while it runs the queue (removed on exit).
+                     So "ai-task-commander" is not a valid job name.
 
 Status shown for each job: from <name>.status when present; for jobs run by the legacy
 PowerShell/bash watchers (no .status) it is inferred from .pid/.md/.err presence and timestamps.
@@ -84,7 +84,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 # model/effort reach the CLI command line (through cmd.exe for npm .cmd shims): plain characters only.
 SAFE_ARG = re.compile(r"^[A-Za-z0-9._:/@+\[\]-]{1,100}$")
 LOCK_NAME = ".monitor-runner.lock"
-MONITOR_PID_NAME = "cli-watcher-monitor.pid"  # PID of the --run monitor, plain text
+MONITOR_PID_NAME = "ai-task-commander.pid"  # PID of the --run monitor, plain text
 POLL_SECONDS = 5
 
 
@@ -291,7 +291,7 @@ class QueueScanner:
         self.watcher: psutil.Process | None = None
         self.watcher_exact = False  # True when the process command line names the watcher script
         self.watcher_kind: str | None = None
-        self.watcher_builtin = False  # True when the runner is a cli-watcher-monitor --run
+        self.watcher_builtin = False  # True when the runner is a ai-task-commander --run
 
     # -- jobs --
 
@@ -763,7 +763,7 @@ def acquire_lock(queue: Path, runner: str, workdir: Path) -> Path:
     lock = queue / LOCK_NAME
     owner = lock_owner(queue)
     if owner:
-        raise RuntimeError(f"another cli-watcher-monitor --run (PID {owner[0].pid}) is running this queue")
+        raise RuntimeError(f"another ai-task-commander --run (PID {owner[0].pid}) is running this queue")
     lock.unlink(missing_ok=True)  # stale lock from a runner that died
     me = psutil.Process()
     info = {
@@ -787,7 +787,7 @@ def acquire_lock(queue: Path, runner: str, workdir: Path) -> Path:
 
 
 def release_lock(lock: Path | None) -> None:
-    """Remove the runner lock and cli-watcher-monitor.pid, if they are still ours."""
+    """Remove the runner lock and ai-task-commander.pid, if they are still ours."""
     if lock is None:
         return
     pidf = lock.parent / MONITOR_PID_NAME
@@ -1009,7 +1009,7 @@ class Pane(VerticalScroll):
 
 
 class MonitorApp(App):
-    TITLE = "cli-watcher-monitor"
+    TITLE = "ai-task-commander"
     ENABLE_COMMAND_PALETTE = False
     CSS = """
     Screen { background: $background; }
@@ -1235,7 +1235,7 @@ class MonitorApp(App):
     def _render_header(self) -> None:
         counts = {s: sum(1 for j in self.all_jobs if j.status == s) for s in (OK, ERR, RUNNING, QUEUED)}
         t = Text()
-        t.append(" ◆ CLI WATCHER MONITOR ", style="bold reverse")
+        t.append(" ◆ AI TASK COMMANDER ", style="bold reverse")
         t.append("  ")
         t.append(self.queue.name, style="bold")
         t.append("   ")
@@ -1280,7 +1280,7 @@ class MonitorApp(App):
         if jr is not None:
             t.append("built-in ", style="bold green")
             t.append(f"⏱ {fmt_dur(now - self.started)}", style="bold green")
-            t.append(f" pid {os.getpid()}", style="dim")  # also in <queue>/cli-watcher-monitor.pid
+            t.append(f" pid {os.getpid()}", style="dim")  # also in <queue>/ai-task-commander.pid
             if jr.current:
                 t.append(f" ▶ {jr.current}", style="bold yellow")
             else:

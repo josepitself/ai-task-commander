@@ -1,8 +1,10 @@
-# ai-cli-watcher
+# ai-task-commander
 
 Permet a Claude Code delegar feines a un altre model a través de la seva CLI (`codex` o `claude`), mitjançant una cua de fitxers.
 
-`cli-watcher-monitor.py` és una interfície de text que mostra la cua i, amb `--run`, també l'executa: un sol terminal, a Windows i a Linux. Per cada feina escriu un fitxer `<nom>.status` amb l'estat, les hores d'inici i fi i el codi de sortida.
+`ai-task-commander.py` és una interfície de text que mostra la cua i, amb `--run`, també l'executa: un sol terminal, a Windows i a Linux. Per cada feina escriu un fitxer `<nom>.status` amb l'estat, les hores d'inici i fi i el codi de sortida.
+
+El nom ve del clàssic [Norton Commander](https://en.wikipedia.org/wiki/Norton_Commander), al qual s'assembla la interfície: una barra de títol a dalt, panells emmarcats que es recorren amb `Tab` i les fletxes, una barra inferior amb les tecles disponibles i tot es fa des del teclat. Aquí, en lloc de fitxers, els panells mostren les feines de la IA: la cua, la petició, la resposta i els errors.
 
 Substitueix els antics watchers en PowerShell i bash (`gpt-watcher` / `claude-watcher`, `.ps1` i `.sh`), que ja no formen part del repositori (són a l'historial de git fins al commit `c9e1708`). Les cues que van processar es poden seguir obrint amb el monitor: vegeu [Feines sense .status](#feines-sense-status).
 
@@ -11,9 +13,9 @@ No facis córrer mai dos runners sobre la mateixa cua. El monitor no arrenca amb
 ## Sinopsi
 
 ```
-uv run cli-watcher-monitor.py QUEUE_DIR [--run [-f|--force] [-w|--workdir DIR]]
-                                        [-r|--refresh SEGONS] [-n|--jobs N] [--runner auto|codex|claude]
-uv run cli-watcher-monitor.py -h|--help
+uv run ai-task-commander.py QUEUE_DIR [--run [-f|--force] [-w|--workdir DIR]]
+                                      [-r|--refresh SEGONS] [-n|--jobs N] [--runner auto|codex|claude]
+uv run ai-task-commander.py -h|--help
 
 Mostra les feines de la cua QUEUE_DIR i, amb --run, executa la CLI (codex o claude) per cada
 feina <nom>.json que hi aparegui. Surt amb q (si hi ha una feina en curs, demana confirmació).
@@ -52,19 +54,19 @@ Codis de sortida en arrencar:
 ## Execució
 
 ```powershell
-uv run cli-watcher-monitor.py C:\Claude\HomeAssistant\gpt-queue --run           # monitor + runner
-uv run cli-watcher-monitor.py C:\Claude\HomeAssistant\gpt-queue --run --force   # i processa les pendents
-uv run cli-watcher-monitor.py D:\proves\claude-queue --run -w D:\proves
-uv run cli-watcher-monitor.py C:\Claude\HomeAssistant\gpt-queue                 # només mirar
+uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue --run           # monitor + runner
+uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue --run --force   # i processa les pendents
+uv run ai-task-commander.py D:\proves\claude-queue --run -w D:\proves
+uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue                 # només mirar
 ```
 
 ```bash
-uv run cli-watcher-monitor.py ~/Claude/HomeAssistant/gpt-queue --run
+uv run ai-task-commander.py ~/Claude/HomeAssistant/gpt-queue --run
 ```
 
 ## Pantalla
 
-A dalt, totes les feines de la cua, de la més nova a la més antiga, en una taula de N files visibles que es desplaça: estat (`OK`, `ERR`, `RUNNING` o `QUEUED`), model, effort, hora d'entrada, inici, fi i durada. A sota, la petició de la feina seleccionada (esquerra) i el `.md` i el `.err` (dreta). Amb `--run`, la barra superior mostra `▶ RUNNER` i el directori de treball, i cada inici i final de feina surt com a notificació (`▶ Started`, `✔ ... OK`, `✖ ... ERROR`). La línia d'estat mostra el runner, el temps que fa que corre (i la feina en curs), el PID del monitor (amb `--run`, el mateix de `cli-watcher-monitor.pid`), l'interval de refresc i la ruta de la cua.
+A dalt, totes les feines de la cua, de la més nova a la més antiga, en una taula de N files visibles que es desplaça: estat (`OK`, `ERR`, `RUNNING` o `QUEUED`), model, effort, hora d'entrada, inici, fi i durada. A sota, la petició de la feina seleccionada (esquerra) i el `.md` i el `.err` (dreta). Amb `--run`, la barra superior mostra `▶ RUNNER` i el directori de treball, i cada inici i final de feina surt com a notificació (`▶ Started`, `✔ ... OK`, `✖ ... ERROR`). La línia d'estat mostra el runner, el temps que fa que corre (i la feina en curs), el PID del monitor (amb `--run`, el mateix de `ai-task-commander.pid`), l'interval de refresc i la ruta de la cua.
 
 | Tecla | Acció |
 |---|---|
@@ -93,7 +95,7 @@ En arrencar amb `--run`, el monitor fa aquestes comprovacions abans d'obrir la p
 
 Només compten com a pendents els fitxers `*.json` que són feines vàlides. L'històric (`*.json.done`, `*.status`, `*.md`, `*.err`) es conserva i no bloqueja l'arrencada. Cap directori existent no s'esborra ni se sobreescriu mai.
 
-**Contracte de la cua:** el directori de cua només conté feines, el seu històric, el `<nom>.pid` de la feina en curs, i el bloqueig i el `cli-watcher-monitor.pid` del runner. Els fitxers que la feina necessiti (dades, diffs, prompts llargs) van a un altre lloc dins del directori de treball, o a la cua només si no tenen extensió `.json`. Un `.json` que no és una feina s'avisa un cop i s'ignora fins que canviï; és una xarxa de seguretat, no una invitació a guardar-hi dades.
+**Contracte de la cua:** el directori de cua només conté feines, el seu històric, el `<nom>.pid` de la feina en curs, i el bloqueig i el `ai-task-commander.pid` del runner. Els fitxers que la feina necessiti (dades, diffs, prompts llargs) van a un altre lloc dins del directori de treball, o a la cua només si no tenen extensió `.json`. Un `.json` que no és una feina s'avisa un cop i s'ignora fins que canviï; és una xarxa de seguretat, no una invitació a guardar-hi dades.
 
 ## Format d'una feina
 
@@ -123,7 +125,7 @@ Les feines es processen d'una en una, per ordre de data de modificació, mirant 
 | `<nom>.json.done` | La feina original, reanomenada quan acaba. |
 | `<nom>.pid` | Només mentre la feina s'executa: el PID del procés de la CLI (vegeu [Fitxer .pid](#fitxer-pid)). |
 | `.monitor-runner.lock` | Només mentre hi ha un monitor amb `--run`: PID i dades del runner. Impedeix que n'arrenqui un segon. |
-| `cli-watcher-monitor.pid` | Només mentre hi ha un monitor amb `--run`: el PID del monitor, només el número en una línia (com el [`<nom>.pid`](#fitxer-pid)). S'esborra en sortir; si el monitor mor de cop es queda, i el següent `--run` el sobreescriu. Per això `cli-watcher-monitor` no és un nom de feina vàlid: un `cli-watcher-monitor.json` surt com a `ERR` i no s'executa. |
+| `ai-task-commander.pid` | Només mentre hi ha un monitor amb `--run`: el PID del monitor, només el número en una línia (com el [`<nom>.pid`](#fitxer-pid)). S'esborra en sortir; si el monitor mor de cop es queda, i el següent `--run` el sobreescriu. Per això `ai-task-commander` no és un nom de feina vàlid: un `ai-task-commander.json` surt com a `ERR` i no s'executa. |
 
 ### Fitxer .status
 
@@ -190,7 +192,7 @@ Els PID es reutilitzen: un `.pid` antic podria apuntar per casualitat a un altre
 2. Espera que `<nom>.status` digui `OK` o `ERR` (o que aparegui `<nom>.json.done`). Mentrestant, si `state` és `RUNNING` i el `pid` existeix, la CLI encara treballa.
 3. Si és `OK`, llegeix `<nom>.md`. Si és `ERR`, `reason` diu el motiu i el final de `<nom>.err` el detall.
 
-Si al cap d'uns 20 segons d'haver escrit el `.json` no hi ha `<nom>.status`, el runner no corre o ha rebutjat la feina (mira la pantalla del monitor). A les rutes de Windows dins del `prompt`, vigila les seqüències d'escapament (`\a`, `\b`, `\n`, `\t`...): una ruta com `gpt-queue\aicw-...` escrita en una cadena no literal acaba amb un caràcter de control en lloc de `\a`. Fer servir barres `/` a les rutes ho evita.
+Si al cap d'uns 20 segons d'haver escrit el `.json` no hi ha `<nom>.status`, el runner no corre o ha rebutjat la feina (mira la pantalla del monitor). A les rutes de Windows dins del `prompt`, vigila les seqüències d'escapament (`\a`, `\b`, `\n`, `\t`...): una ruta com `gpt-queue\aitc-...` escrita en una cadena no literal acaba amb un caràcter de control en lloc de `\a`. Fer servir barres `/` a les rutes ho evita.
 
 ### Exemple d'instruccions a CLAUDE.md
 
@@ -204,7 +206,7 @@ a la cua de codex en comptes de respondre-la tu:
 
 1. Escriu un fitxer de feina a `C:/Claude/HomeAssistant/gpt-queue/<nom>.json` amb
    l'eina Write (així queda en UTF-8; `Set-Content` o `>` de PowerShell no ho
-   garanteixen). Fes servir un nom únic, per exemple `aicw-<tema>`. Contingut:
+   garanteixen). Fes servir un nom únic, per exemple `aitc-<tema>`. Contingut:
 
    ```json
    {
