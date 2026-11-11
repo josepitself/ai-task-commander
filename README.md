@@ -66,16 +66,17 @@ uv run ai-task-commander.py ~/Claude/HomeAssistant/gpt-queue --run
 
 ## Pantalla
 
-A dalt, totes les feines de la cua, de la més nova a la més antiga, en una taula de N files visibles que es desplaça: estat (`OK`, `ERR`, `RUNNING` o `QUEUED`), model, effort, hora d'entrada, inici, fi i durada. A sota, la petició de la feina seleccionada (esquerra) i el `.md` i el `.err` (dreta). Amb `--run`, la barra superior mostra `▶ RUNNER` i el directori de treball, i cada inici i final de feina surt com a notificació (`▶ Started`, `✔ ... OK`, `✖ ... ERROR`). La línia d'estat mostra el runner, el temps que fa que corre (i la feina en curs), el PID del monitor (amb `--run`, el mateix de `ai-task-commander.pid`), l'interval de refresc i la ruta de la cua.
+A dalt, totes les feines de la cua, de la més nova a la més antiga, en una taula de N files visibles que es desplaça: estat (`OK`, `ERR`, `RUNNING` o `QUEUED`), model, effort, hora d'entrada, inici, fi i durada. A sota, la petició de la feina seleccionada (esquerra) i el `.md` i el `.err` (dreta). Amb `--run`, la barra superior mostra `▶ RUNNER` i el directori de treball, i cada inici i final de feina surt com a notificació (`▶ Started`, `✔ ... OK`, `✖ ... ERROR`). La línia d'estat mostra el runner, el temps que fa que corre (i la feina en curs), el PID del monitor (amb `--run`, el mateix de `ai-task-commander.pid`), l'interval de refresc i la ruta de la cua. A la dreta de la barra de tecles, `⤒ ON/OFF` i `md ON/OFF` indiquen si la selecció segueix les feines noves i si es renderitza el Markdown.
 
 | Tecla | Acció |
 |---|---|
 | `↑` `↓` `PgUp` `PgDn` `Home` `End`, `1`-`9` | Tria feina (la llista es desplaça per tota la cua) |
 | `Tab`, `←` `→` | Canvia de panell; `↑` `↓` `PgUp` `PgDn` `Home` `End` desplacen el panell actiu |
 | `z` / `Esc` | Amplia el panell actiu / torna |
+| `f` | Activa o desactiva *Follow new jobs*: en entrar una feina nova a la cua, la selecció salta a la més nova |
 | `m` | Markdown renderitzat o text en brut |
 | `r` | Refresca ara |
-| `/` | Configuració (només per a la sessió): interval de refresc en segons i files de feines visibles (`-n`). `Tab` canvia de camp, `Enter` aplica |
+| `/` | Configuració (només per a la sessió): interval de refresc en segons, files de feines visibles (`-n`) i *Follow new jobs* (en entrar una feina nova a la cua, la selecció salta a la més nova; desactivat per defecte). `Tab` canvia de camp, `Espai` marca la casella, `Enter` aplica |
 | `q` | Surt. Amb una feina en curs demana confirmació: `y` atura la CLI i la feina queda pendent |
 
 Sense `--run`, el monitor detecta pel fitxer de bloqueig el monitor amb `--run` que executa la cua i en mostra el temps d'execució.

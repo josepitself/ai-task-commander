@@ -14,7 +14,8 @@ Usage:
                                           [--run [--force] [--workdir DIR]]
     uv run ai-task-commander.py --help    (or -h)
 
-Press / in the UI to change the refresh interval and the visible job rows for the session.
+Press / in the UI to change the refresh interval, the visible job rows and "follow new jobs"
+(select the newest job when one enters the queue; off by default) for the session.
 
 Without --run it only reads the queue (another runner processes it).
 With --run it is also the queue runner (replaces gpt-watcher / claude-watcher): every 5 s it runs the
@@ -63,7 +64,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import DataTable, Input, Label, Static
+from textual.widgets import Checkbox, DataTable, Input, Label, Static
 
 # --- Constants ----------------------------------------------------------------
 
@@ -919,15 +920,28 @@ def status_text(status: str, frame: int = 0) -> Text:
 # --- Config dialog ------------------------------------------------------------
 
 
-class ConfigScreen(ModalScreen[tuple[int, int] | None]):
-    """Session settings: auto-refresh interval and visible job rows. Returns (refresh, rows) or None."""
+class SpaceCheckbox(Checkbox, inherit_bindings=False):
+    """Checkbox toggled with Space only, so Enter reaches the dialog and applies it.
+    Empty box when off (Textual shows a dimmed X)."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("space", "toggle_button", "Toggle", show=False)]
 
-    def __init__(self, refresh: int, rows: int):
+    @property
+    def BUTTON_INNER(self) -> str:  # noqa: N802 (overrides Textual's class attribute)
+        return "X" if self.value else " "
+
+
+class ConfigScreen(ModalScreen[tuple[int, int, bool] | None]):
+    """Session settings: auto-refresh interval, visible job rows and follow new jobs.
+    Returns (refresh, rows, follow) or None."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel"), Binding("enter", "apply", show=False)]
+
+    def __init__(self, refresh: int, rows: int, follow: bool):
         super().__init__()
         self.refresh_secs = refresh
         self.rows = rows
+        self.follow = follow
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
@@ -936,8 +950,9 @@ class ConfigScreen(ModalScreen[tuple[int, int] | None]):
             yield Input(str(self.refresh_secs), type="integer", id="refresh-input")
             yield Label("Job rows visible at once (1-50)")
             yield Input(str(self.rows), type="integer", id="rows-input")
-            yield Label("[b]Enter[/] apply   [b]Tab[/] next field   [b]Esc[/] cancel\n"
-                        "(not saved, this session only)", id="dlg-help")
+            yield SpaceCheckbox("Follow new jobs (select the newest)", self.follow, id="follow-check")
+            yield Label("[b]Enter[/] apply   [b]Tab[/] next field   [b]Space[/] toggle\n"
+                        "[b]Esc[/] cancel   (not saved, this session only)", id="dlg-help")
 
     def on_mount(self) -> None:
         inp = self.query_one("#refresh-input", Input)
@@ -953,7 +968,10 @@ class ConfigScreen(ModalScreen[tuple[int, int] | None]):
         return value if low <= value <= high else None
 
     @on(Input.Submitted)
-    def submit(self, event: Input.Submitted) -> None:
+    def submit(self) -> None:
+        self.action_apply()
+
+    def action_apply(self) -> None:
         checks = [("#refresh-input", 1, 3600, "Refresh"), ("#rows-input", 1, 50, "Job rows")]
         values = []
         for sel, low, high, label in checks:
@@ -966,7 +984,7 @@ class ConfigScreen(ModalScreen[tuple[int, int] | None]):
                 inp.action_select_all()
                 return
             values.append(value)
-        self.dismiss((values[0], values[1]))
+        self.dismiss((values[0], values[1], self.query_one("#follow-check", Checkbox).value))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1062,13 +1080,14 @@ class MonitorApp(App):
         width: 1fr; height: 1; padding: 0 1; color: $text-muted;
         text-overflow: ellipsis; text-wrap: nowrap;
     }
-    #status-md { width: auto; height: 1; padding: 0 1; text-wrap: nowrap; }
+    #status-follow, #status-md { width: auto; height: 1; padding: 0 1; text-wrap: nowrap; }
     ConfigScreen { align: center middle; background: $background 60%; }
     #dialog {
         width: 54; height: auto; padding: 1 2; border: thick $accent; background: $surface;
     }
     #dialog Label { width: 100%; }
     #dlg-title { text-style: bold; color: $accent; margin-bottom: 1; }
+    #follow-check { width: 100%; margin-top: 1; }
     ConfirmQuitScreen { align: center middle; background: $background 60%; }
     #dlg-help { color: $text-muted; margin-top: 1; }
     """
@@ -1078,6 +1097,7 @@ class MonitorApp(App):
         Binding("ctrl+c", "quit", show=False, priority=True),
         Binding("slash", "config", "Config"),
         Binding("r", "refresh_now", "Refresh"),
+        Binding("f", "toggle_follow", "Follow new jobs"),
         Binding("m", "toggle_markdown", "Markdown"),
         Binding("z", "zoom", "Zoom pane"),
         Binding("escape", "back", show=False),
@@ -1101,6 +1121,7 @@ class MonitorApp(App):
         self.selected: str | None = None
         self.rendered_sig: tuple | None = None
         self.markdown = True
+        self.follow = False  # follow new jobs: select the newest when a job enters the queue
         self.frame = 0
         self.started = time.time()
         self.next_refresh = time.monotonic() + refresh
@@ -1128,6 +1149,7 @@ class MonitorApp(App):
             yield Static(id="status-left")
             with Horizontal(id="status-bottom"):
                 yield Static(id="status-keys")
+                yield Static(id="status-follow")
                 yield Static(id="status-md")
 
     def on_mount(self) -> None:
@@ -1139,7 +1161,7 @@ class MonitorApp(App):
         self.query_one("#output").border_title = "Output"
         self.query_one("#errors").border_title = "Errors"
         self.watch(self.screen, "maximized", self._render_keys)  # also catches Esc (handled by Textual)
-        self._render_md_flag()
+        self._render_flags()
         table.focus()
         self._timer = self.set_interval(self.refresh_secs, self.do_refresh)
         self.set_interval(0.5, self.tick)
@@ -1212,6 +1234,9 @@ class MonitorApp(App):
         table = self.query_one("#jobs", DataTable)
         self._setup_columns(table)
         names = [j.name for j in self.jobs]
+        current = [k.value for k in table.rows]
+        if self.follow and current and set(names) - set(current):
+            self.selected = names[0]  # a new job entered the queue: jump to the newest
         if self.selected not in names:
             self.selected = names[0] if names else None
         now = time.time()
@@ -1232,7 +1257,6 @@ class MonitorApp(App):
                 "dur": Text(fmt_dur(job.duration(now)), style="yellow" if job.status == RUNNING else ""),
             }
             rows.append((job.name, [cells[k.value] for k in table.columns]))
-        current = [k.value for k in table.rows]
         if current == names:
             # Same rows: update in place (no flicker, cursor untouched).
             for key, cells in rows:
@@ -1515,22 +1539,31 @@ class MonitorApp(App):
 
     def action_toggle_markdown(self) -> None:
         self.markdown = not self.markdown
-        self._render_md_flag()
+        self._render_flags()
         self._show_selected(force=True)
+
+    def action_toggle_follow(self) -> None:
+        self.follow = not self.follow
+        self._render_flags()
 
     def _render_keys(self, maximized: Widget | None = None) -> None:
         if maximized is None:
             keys = ("[b]↑↓ PgUp[/]/[b]PgDn[/] [b]Home[/]/[b]End[/] job  [b]⇥ [/]/[b]←→[/] pane  [b]z[/] zoom  "
-                    "[b]m[/] md  [b]r[/] refresh  [b]/[/] config  [b]q[/] quit")
+                    "[b]f[/] follow  [b]m[/] md  [b]r[/] refresh  [b]/[/] config  [b]q[/] quit")
         else:  # zoomed: the keys scroll the pane, the job list is hidden
             keys = ("[b]↑↓ PgUp[/]/[b]PgDn[/] [b]Home[/]/[b]End[/] scroll  [b]z[/]/[b]Esc[/] unzoom  "
-                    "[b]m[/] md  [b]r[/] refresh  [b]/[/] config  [b]q[/] quit")
+                    "[b]f[/] follow  [b]m[/] md  [b]r[/] refresh  [b]/[/] config  [b]q[/] quit")
         self.query_one("#status-keys", Static).update(Text.from_markup(keys))
 
-    def _render_md_flag(self) -> None:
-        t = Text("Markdown ", style="dim")
-        t.append("ON" if self.markdown else "OFF", style="bold green" if self.markdown else "dim cyan")
-        self.query_one("#status-md", Static).update(t)
+    @staticmethod
+    def _flag(label: str, on: bool) -> Text:
+        t = Text(f"{label} ", style="dim")
+        t.append("ON" if on else "OFF", style="bold green" if on else "dim cyan")
+        return t
+
+    def _render_flags(self) -> None:
+        self.query_one("#status-follow", Static).update(self._flag("⤒", self.follow))
+        self.query_one("#status-md", Static).update(self._flag("md", self.markdown))
 
     async def action_refresh_now(self) -> None:
         if self._timer is not None:
@@ -1539,10 +1572,10 @@ class MonitorApp(App):
         self.notify("Refreshed", timeout=1.5)
 
     def action_config(self) -> None:
-        def apply(values: tuple[int, int] | None) -> None:
+        def apply(values: tuple[int, int, bool] | None) -> None:
             if values is None:
                 return
-            refresh, rows = values
+            refresh, rows, follow = values
             changes = []
             if refresh != self.refresh_secs:
                 self.refresh_secs = refresh
@@ -1558,11 +1591,15 @@ class MonitorApp(App):
                 # Keep the selected job in view once the table has its new height.
                 self.call_after_refresh(lambda: table.move_cursor(row=table.cursor_row, animate=False))
                 changes.append(f"{rows} job rows")
+            if follow != self.follow:
+                self.follow = follow
+                self._render_flags()
+                changes.append(f"follow new jobs {'on' if follow else 'off'}")
             if changes:
                 self.notify(", ".join(changes).capitalize(), timeout=2)
                 self._render_status(time.time())
 
-        self.push_screen(ConfigScreen(self.refresh_secs, self.rows), apply)
+        self.push_screen(ConfigScreen(self.refresh_secs, self.rows, self.follow), apply)
 
 
 # --- CLI ----------------------------------------------------------------------
