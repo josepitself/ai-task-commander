@@ -1037,6 +1037,8 @@ class MonitorApp(App):
         background: $surface; padding: 0 1; scrollbar-size-vertical: 1;
     }
     .pane:focus { border: round $accent; border-title-color: $accent; border-title-style: bold; }
+    /* zoomed pane fills the screen (its split-layout width/height, e.g. #request 2fr, would overflow) */
+    .pane.-maximized { width: 1fr !important; height: 1fr !important; }
     #errors.bad { border: round $error 70%; border-title-color: $error; }
     #errors.bad:focus { border: round $error; }
     #request-body, #output-body, #errors-body { width: 100%; height: auto; }
