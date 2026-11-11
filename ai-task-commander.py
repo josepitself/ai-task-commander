@@ -62,6 +62,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import DataTable, Input, Label, Static
 
 # --- Constants ----------------------------------------------------------------
@@ -1011,6 +1012,7 @@ class Pane(VerticalScroll):
 class MonitorApp(App):
     TITLE = "ai-task-commander"
     ENABLE_COMMAND_PALETTE = False
+    ALLOW_IN_MAXIMIZED_VIEW = "#statusbar"  # the zoomed pane keeps both status bars
     CSS = """
     Screen { background: $background; }
     #titlebar {
@@ -1125,10 +1127,7 @@ class MonitorApp(App):
         self.query_one("#request").border_title = "Request"
         self.query_one("#output").border_title = "Output"
         self.query_one("#errors").border_title = "Errors"
-        self.query_one("#status-keys", Static).update(Text.from_markup(
-            "[b]↑↓ PgUp[/]/[b]PgDn[/] [b]Home[/]/[b]End[/] job  [b]⇥ [/]/[b]←→[/] pane  [b]z[/] zoom  "
-            "[b]m[/] md  [b]r[/] refresh  [b]/[/] config  [b]q[/] quit"
-        ))
+        self.watch(self.screen, "maximized", self._render_keys)  # also catches Esc (handled by Textual)
         self._render_md_flag()
         table.focus()
         self._timer = self.set_interval(self.refresh_secs, self.do_refresh)
@@ -1507,6 +1506,15 @@ class MonitorApp(App):
         self.markdown = not self.markdown
         self._render_md_flag()
         self._show_selected(force=True)
+
+    def _render_keys(self, maximized: Widget | None = None) -> None:
+        if maximized is None:
+            keys = ("[b]↑↓ PgUp[/]/[b]PgDn[/] [b]Home[/]/[b]End[/] job  [b]⇥ [/]/[b]←→[/] pane  [b]z[/] zoom  "
+                    "[b]m[/] md  [b]r[/] refresh  [b]/[/] config  [b]q[/] quit")
+        else:  # zoomed: the keys scroll the pane, the job list is hidden
+            keys = ("[b]↑↓ PgUp[/]/[b]PgDn[/] [b]Home[/]/[b]End[/] scroll  [b]z[/]/[b]Esc[/] unzoom  "
+                    "[b]m[/] md  [b]r[/] refresh  [b]/[/] config  [b]q[/] quit")
+        self.query_one("#status-keys", Static).update(Text.from_markup(keys))
 
     def _render_md_flag(self) -> None:
         t = Text("Markdown ", style="dim")
