@@ -900,6 +900,17 @@ def fmt_size(n: int) -> str:
     return f"{n} B"
 
 
+def fmt_path(path: Path) -> str:
+    """Path for the title/status bars: on Linux/macOS the home directory is shown as ~."""
+    text = str(path)
+    if os.name == "nt":
+        return text
+    home = str(Path.home())
+    if home != "/" and (text == home or text.startswith(home + "/")):
+        return "~" + text[len(home):]
+    return text
+
+
 def status_text(status: str, frame: int = 0) -> Text:
     icon = SPINNER[frame % len(SPINNER)] if status == RUNNING else STATUS_ICON[status]
     return Text(f"{icon} {status}", style=STATUS_STYLE[status])
@@ -1252,7 +1263,7 @@ class MonitorApp(App):
         if self.job_runner is not None:
             t.append("   ")
             t.append(" ▶ RUNNER ", style="bold reverse green")
-            path = str(self.job_runner.workdir)
+            path = fmt_path(self.job_runner.workdir)
             room = self.size.width - t.cell_len - 12
             if len(path) > room > 12:
                 path = "…" + path[-(room - 1):]
@@ -1316,7 +1327,7 @@ class MonitorApp(App):
         t.append(f" (next {left}s)", style="dim")
         t.append("  │  ", style="dim")
         t.append("📂 ")
-        path = str(self.queue)
+        path = fmt_path(self.queue)
         room = self.size.width - t.cell_len - 2
         if len(path) > room > 12:  # keep the end of the path, which names the queue
             path = "…" + path[-(room - 1):]
