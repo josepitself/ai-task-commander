@@ -73,6 +73,7 @@ A dalt, totes les feines de la cua, de la més nova a la més antiga, en una tau
 | `↑` `↓` `PgUp` `PgDn` `Home` `End`, `1`-`9` | Tria feina (la llista es desplaça per tota la cua) |
 | `Tab`, `←` `→` | Canvia de panell; `↑` `↓` `PgUp` `PgDn` `Home` `End` desplacen el panell actiu |
 | `z` / `Esc` | Amplia el panell actiu / torna |
+| `s` | Amb un panell ampliat, mostra la sortida (`.md`) i els errors (`.err`) un al costat de l'altre; `Tab` o `←` `→` canvien entre tots dos i `s` torna al panell sol |
 | `f` | Activa o desactiva *Follow new jobs*: en entrar una feina nova a la cua, la selecció salta a la més nova |
 | `m` | Markdown renderitzat o text en brut |
 | `r` | Refresca ara |
