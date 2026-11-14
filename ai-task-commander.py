@@ -1038,8 +1038,8 @@ class Pane(VerticalScroll):
     ALLOW_MAXIMIZE = True
 
 
-class SplitBox(Vertical):
-    """Output + Errors column; zoomed with s it shows both panes side by side."""
+class SplitBox(Horizontal):
+    """Request + Output/Errors row; zoomed with s it shows two panes side by side."""
 
     ALLOW_MAXIMIZE = True
 
@@ -1076,9 +1076,12 @@ class MonitorApp(App):
     .pane:focus { border: round $accent; border-title-color: $accent; border-title-style: bold; }
     /* zoomed pane fills the screen (its split-layout width/height, e.g. #request 2fr, would overflow) */
     .pane.-maximized { width: 1fr !important; height: 1fr !important; }
-    /* split zoom (s): Output and Errors side by side, filling the screen */
-    #right.split { layout: horizontal; width: 1fr !important; height: 1fr !important; }
-    #right.split > .pane { width: 1fr; height: 1fr; }
+    /* split zoom (s): two panes side by side, filling the screen */
+    #panes.split-ro #errors, #panes.split-oe #request { display: none; }
+    #panes.split-ro #request, #panes.split-ro #right { width: 1fr; }
+    #panes.split-ro #output { height: 1fr; }
+    #panes.split-oe #right { layout: horizontal; width: 1fr; }
+    #panes.split-oe #output, #panes.split-oe #errors { width: 1fr; height: 1fr; }
     #errors.bad { border: round $error 70%; border-title-color: $error; }
     #errors.bad:focus { border: round $error; }
     #request-body, #output-body, #errors-body { width: 100%; height: auto; }
@@ -1147,10 +1150,10 @@ class MonitorApp(App):
     def compose(self) -> ComposeResult:
         yield Static(id="titlebar")
         yield JobTable(id="jobs", cursor_type="row", zebra_stripes=True)
-        with Horizontal(id="panes"):
+        with SplitBox(id="panes"):
             with Pane(id="request", classes="pane"):
                 yield Static(id="request-body")
-            with SplitBox(id="right"):
+            with Vertical(id="right"):
                 with Pane(id="output", classes="pane"):
                     yield Static(id="output-body")
                 with Pane(id="errors", classes="pane"):
@@ -1517,13 +1520,26 @@ class MonitorApp(App):
             return
         self.exit()
 
+    # split zoom (s): the pane zoomed alone -> the pair shown side by side (class on #panes, visible panes)
+    SPLITS = {
+        "request": ("split-ro", ("request", "output")),
+        "output": ("split-oe", ("output", "errors")),
+        "errors": ("split-oe", ("output", "errors")),
+    }
+
     def _is_split(self) -> bool:
-        return self.screen.maximized is not None and self.screen.maximized.id == "right"
+        return self.screen.maximized is not None and self.screen.maximized.id == "panes"
+
+    def _split_panes(self) -> tuple[str, str]:
+        """Ids of the two panes visible in the current split zoom."""
+        cls = "split-ro" if self.query_one("#panes").has_class("split-ro") else "split-oe"
+        return next(pair for c, pair in self.SPLITS.values() if c == cls)
 
     def action_pane(self, step: int) -> None:
-        if self._is_split():  # split zoom: switch between Output and Errors, stay zoomed
-            other = "#errors" if self.focused is not None and self.focused.id == "output" else "#output"
-            self.query_one(other).focus()
+        if self._is_split():  # split zoom: switch between the two visible panes, stay zoomed
+            a, b = self._split_panes()
+            other = b if self.focused is not None and self.focused.id == a else a
+            self.query_one(f"#{other}").focus()
             return
         if self.screen.maximized is not None:
             self.screen.minimize()
@@ -1548,21 +1564,26 @@ class MonitorApp(App):
         self.screen.maximize(target, container=False)
 
     def action_split(self) -> None:
-        """Zoomed: toggle Output and Errors side by side (s) and back to the focused pane alone."""
+        """Zoomed: show the pane next to its pair (s) and back to the focused pane alone.
+
+        Request -> Request + Output; Output or Session log -> Output + Session log.
+        """
         maximized = self.screen.maximized
         if maximized is None:
             return
-        right = self.query_one("#right")
+        panes = self.query_one("#panes")
         if self._is_split():
-            target = self.focused if self.focused is not None and self.focused.id in ("output", "errors")                 else self.query_one("#output")
-            right.remove_class("split")
+            visible = self._split_panes()
+            target_id = self.focused.id if self.focused is not None and self.focused.id in visible else visible[0]
+            panes.remove_class("split-ro", "split-oe")
+            target = self.query_one(f"#{target_id}")
             target.focus()
             self.screen.maximize(target, container=False)
             return
-        target = maximized if maximized.id in ("output", "errors") else self.query_one("#output")
-        right.add_class("split")
-        target.focus()
-        self.screen.maximize(right, container=False)
+        target_id = maximized.id if maximized.id in self.SPLITS else "output"
+        panes.add_class(self.SPLITS[target_id][0])
+        self.query_one(f"#{target_id}").focus()
+        self.screen.maximize(panes, container=False)
 
     def action_pick(self, n: int) -> None:
         if 1 <= n <= len(self.jobs):
@@ -1580,13 +1601,13 @@ class MonitorApp(App):
         self._render_flags()
 
     def _render_keys(self, maximized: Widget | None = None) -> None:
-        split = maximized is not None and maximized.id == "right"
-        if not split:
-            self.query_one("#right").remove_class("split")  # unzoomed (z, Esc, pane switch) or single pane
+        split = maximized is not None and maximized.id == "panes"
+        if not split:  # unzoomed (z, Esc, pane switch) or single pane
+            self.query_one("#panes").remove_class("split-ro", "split-oe")
         if maximized is None:
             keys = ("[b]↑↓ PgUp[/]/[b]PgDn[/] [b]Home[/]/[b]End[/] job  [b]⇥ [/]/[b]←→[/] pane  [b]z[/] zoom  "
                     "[b]f[/] follow  [b]m[/] md  [b]r[/] refresh  [b]/[/] config  [b]q[/] quit")
-        elif split:  # Output and Errors side by side
+        elif split:  # two panes side by side
             keys = ("[b]↑↓ PgUp[/]/[b]PgDn[/] [b]Home[/]/[b]End[/] scroll  [b]⇥ [/]/[b]←→[/] pane  [b]s[/] unsplit  "
                     "[b]z[/]/[b]Esc[/] unzoom  [b]f[/] follow  [b]m[/] md  [b]r[/] refresh  [b]/[/] config  [b]q[/] quit")
         else:  # zoomed: the keys scroll the pane, the job list is hidden
