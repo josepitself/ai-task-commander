@@ -1169,7 +1169,7 @@ class MonitorApp(App):
         table.border_title = "◆ Queue"
         self.query_one("#request").border_title = "Request"
         self.query_one("#output").border_title = "Output"
-        self.query_one("#errors").border_title = "Errors / Log"
+        self.query_one("#errors").border_title = "Session log"
         self.watch(self.screen, "maximized", self._render_keys)  # also catches Esc (handled by Textual)
         self._render_flags()
         table.focus()
@@ -1418,7 +1418,7 @@ class MonitorApp(App):
 
         err_body, err_sub, has_err = self._render_errors(job)
         self.query_one("#errors-body", Static).update(err_body)
-        errs.border_title = Text(f"Errors / Log · {job.name}.err")
+        errs.border_title = Text(f"Session log · {job.name}.err")
         errs.border_subtitle = err_sub
         errs.set_class(not has_err, "empty")
         errs.set_class(job.status == ERR, "bad")
