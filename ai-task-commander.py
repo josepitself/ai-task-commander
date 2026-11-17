@@ -88,6 +88,22 @@ SAFE_ARG = re.compile(r"^[A-Za-z0-9._:/@+\[\]-]{1,100}$")
 LOCK_NAME = ".monitor-runner.lock"
 MONITOR_PID_NAME = "ai-task-commander.pid"  # PID of the --run monitor, plain text
 POLL_SECONDS = 5
+# Review verdict in <name>.md: the last "Verdict: ..." / "VEREDICTE: ..." / "VEREDICTE GLOBAL: ..." line
+# (RP/1 review results in PROTOCOL.md end with exactly "VERDICT: READY" or "VERDICT: CHANGES REQUESTED")
+# (or such a heading and the next line), else the last line holding only a known verdict
+# (e.g. "**CHANGES REQUESTED**"). Most jobs have none.
+VERDICT_LABEL_RE = re.compile(
+    r"(?im)^[\s>#*_|-]*(?:[^\W\d_]+\s+)?(?:verdict|veredicte|veredicto)\b(?:\s+[^\W\d_]+)?"
+    r"[*_`\s]*([:\-–—]?)(.*)$"
+)
+VERDICTS = ["CHANGES REQUESTED", "REQUEST CHANGES", "CHANGES_REQUESTED", "REQUEST_CHANGES",
+            "APPROVED WITH COMMENTS", "APPROVED", "APPROVE", "REJECTED", "NEEDS WORK", "LGTM"]
+VERDICT_ALT = "|".join(re.escape(v) for v in VERDICTS)
+VERDICT_LINE_RE = re.compile(rf"(?m)^[\s>#*_`✅❌⚠️-]*({VERDICT_ALT})[\s*_`.!]*$")
+VERDICT_MAX = 24
+# Verdict colours: negative words are checked first ("NO VÀLID", "NOT APPROVED" are red).
+VERDICT_BAD_RE = re.compile(r"\b(?:NO|NOT|NON)\b|CHANGE|REJECT|FAIL|BLOCK|NEED|DISCREP|CANVI|CAMBIO|INVALID|INVÀLID")
+VERDICT_GOOD_RE = re.compile(r"READY|APPROV|APROV|APROB|LGTM|PASS|ACORD|ACUERDO|VALID|VÀLID|VÁLID|\bOK\b|CORRECT")
 
 
 class Runner(str, Enum):
@@ -184,6 +200,45 @@ def read_job(path: Path) -> tuple[dict, str | None]:
     return job, None
 
 
+def find_verdict(text: str) -> str:
+    """Review verdict stated in an answer (e.g. CHANGES REQUESTED), or "" when it states none.
+
+    The last one wins: review prompts ask for the verdict on the last line, and an answer may quote
+    an earlier one first.
+    """
+    verdict = ""
+    for m in VERDICT_LABEL_RE.finditer(text):
+        value = m.group(2).strip()
+        if not value.strip("*_`#: "):  # "## Verdict" heading: the verdict is on the next non-blank line
+            rest = text[m.end():]
+            value = next((ln.strip() for ln in rest.splitlines() if ln.strip()), "")
+        elif not m.group(1):
+            continue  # prose such as "the verdict depends on...", not a "Verdict: ..." label
+        bold = re.search(r"\*\*(.+?)\*\*|__(.+?)__|`(.+?)`", value)
+        if bold:
+            value = next(g for g in bold.groups() if g)
+        value = re.split(r"\s[-–—(]\s?|[.;:(|]", value.strip("*_`#>: "))[0].strip("*_`#>: ")
+        if value:
+            value = value.replace("_", " ").upper()
+            verdict = value if len(value) <= VERDICT_MAX else value[: VERDICT_MAX - 1] + "…"
+    if verdict:
+        return verdict
+    found = VERDICT_LINE_RE.findall(text)
+    return found[-1].replace("_", " ") if found else ""
+
+
+def verdict_text(verdict: str) -> Text:
+    if not verdict:
+        return Text("—", style="dim")
+    if VERDICT_BAD_RE.search(verdict):
+        style = "bold red"
+    elif VERDICT_GOOD_RE.search(verdict):
+        style = "bold green"
+    else:
+        style = "bold yellow"
+    return Text(verdict, style=style)
+
+
 def pid_alive(pid: int) -> bool:
     # Never os.kill(pid, 0): on Windows it terminates the process.
     try:
@@ -262,6 +317,7 @@ class Job:
     stop: float | None = None
     exact: bool = False  # status and times come from <name>.status (not inferred)
     meta: dict | None = None  # contents of <name>.status
+    verdict: str = ""  # review verdict found in <name>.md
 
     @property
     def signature(self) -> tuple:
@@ -290,6 +346,7 @@ class QueueScanner:
         self.runner_override = runner
         self.runner = runner.value if runner != Runner.auto else "unknown"
         self._job_cache: dict[Path, tuple[tuple, dict, str | None]] = {}
+        self._verdict_cache: dict[Path, tuple[tuple, str]] = {}
         self.watcher: psutil.Process | None = None
         self.watcher_exact = False  # True when the process command line names the watcher script
         self.watcher_kind: str | None = None
@@ -305,6 +362,16 @@ class QueueScanner:
         job, error = read_job(fi.path)
         self._job_cache[fi.path] = (key, job, error)
         return job, error
+
+    def _verdict(self, md: FileInfo | None) -> str:
+        if md is None or md.size == 0:
+            return ""
+        cached = self._verdict_cache.get(md.path)
+        if cached and cached[0] == md.sig:
+            return cached[1]
+        verdict = find_verdict(read_text(md.path, MD_MAX, tail=False)[0])
+        self._verdict_cache[md.path] = (md.sig, verdict)
+        return verdict
 
     def scan(self) -> list[Job]:
         pending: dict[str, Path] = {}
@@ -340,6 +407,7 @@ class QueueScanner:
             job.model = str(data.get("model") or "")
             job.effort = str(data.get("effort") or "")
             job.prompt = str(data.get("prompt") or "")
+            job.verdict = self._verdict(job.md)
             errors[name] = error
             jobs.append(job)
 
@@ -355,6 +423,8 @@ class QueueScanner:
 
         live = {p for p in self._job_cache if p.exists()}
         self._job_cache = {p: v for p, v in self._job_cache.items() if p in live}
+        mds = {j.md.path for j in jobs if j.md}
+        self._verdict_cache = {p: v for p, v in self._verdict_cache.items() if p in mds}
         jobs.sort(key=lambda j: (j.queued or 0, j.name), reverse=True)
         return jobs
 
@@ -1018,7 +1088,7 @@ PANES = ["#jobs", "#request", "#output", "#errors"]
 COLUMNS = [  # (key, label, width); model/effort/queued are dropped on narrow terminals
     ("n", "#", 2), ("status", "Status", 11), ("job", "Job", None), ("model", "Model", None),
     ("effort", "Effort", 7), ("queued", "Queued", 11), ("start", "Start", 11),
-    ("stop", "Stop", 11), ("dur", "Duration", 9),
+    ("stop", "Stop", 11), ("dur", "Duration", 9), ("verdict", "Verdict", None),
 ]
 COMPACT_WIDTH = 110
 
@@ -1144,6 +1214,7 @@ class MonitorApp(App):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._timer = None
         self._compact: bool | None = None
+        self._layout: tuple[bool, bool] | None = None  # (compact, verdict column)
 
     # -- layout --
 
@@ -1230,13 +1301,17 @@ class MonitorApp(App):
 
     def _setup_columns(self, table: DataTable) -> None:
         compact = self.size.width < COMPACT_WIDTH
-        if compact == self._compact:
+        verdicts = any(j.verdict for j in self.jobs)  # no Verdict column for queues without reviews
+        if (compact, verdicts) == self._layout:
             return
-        self._compact = compact
+        self._compact, self._layout = compact, (compact, verdicts)
         table.clear(columns=True)
         for key, label, width in COLUMNS:
-            if not (compact and key in ("model", "effort", "queued")):
-                table.add_column(label, key=key, width=width)
+            if compact and key in ("model", "effort", "queued"):
+                continue
+            if key == "verdict" and not verdicts:
+                continue
+            table.add_column(label, key=key, width=width)
 
     def on_resize(self) -> None:
         if self._compact is not None and (self.size.width < COMPACT_WIDTH) != self._compact:
@@ -1268,13 +1343,15 @@ class MonitorApp(App):
                 "start": Text(fmt_ts(job.start)),
                 "stop": Text(fmt_ts(job.stop)),
                 "dur": Text(fmt_dur(job.duration(now)), style="yellow" if job.status == RUNNING else ""),
+                "verdict": verdict_text(job.verdict),
             }
             rows.append((job.name, [cells[k.value] for k in table.columns]))
         if current == names:
             # Same rows: update in place (no flicker, cursor untouched).
             for key, cells in rows:
                 for col, cell in zip(table.columns, cells):
-                    table.update_cell(key, col, cell)
+                    # the verdict column grows when a longer verdict arrives (e.g. CHANGES REQUESTED)
+                    table.update_cell(key, col, cell, update_width=col.value == "verdict")
         else:
             table.clear()
             for key, cells in rows:
@@ -1416,7 +1493,10 @@ class MonitorApp(App):
 
         out_body, out_sub = self._render_output(job)
         self.query_one("#output-body", Static).update(out_body)
-        out.border_title = Text(f"Output · {job.name}.md")
+        title = Text(f"Output · {job.name}.md")
+        if job.verdict:
+            title.append(" · ").append_text(verdict_text(job.verdict))
+        out.border_title = title
         out.border_subtitle = out_sub
 
         err_body, err_sub, has_err = self._render_errors(job)
