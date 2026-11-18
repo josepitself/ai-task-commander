@@ -11,13 +11,15 @@
 
 Usage:
     uv run ai-task-commander.py QUEUE_DIR [--refresh 15] [--jobs 5] [--runner auto|codex|claude]
-                                          [--run [--force] [--workdir DIR]]
+                                          [--run [--force] [--workdir DIR]] [--protocol FILE]
     uv run ai-task-commander.py --help    (or -h)
 
 Press / in the UI to change the refresh interval, the visible job rows and "follow new jobs"
 (select the newest job when one enters the queue; off by default) for the session.
 
 Without --run it only reads the queue (another runner processes it).
+With --protocol FILE it also shows each job's review verdict: the last line of <name>.md when it is one
+of the verdict lines FILE declares (e.g. "VERDICT: READY | VERDICT: CHANGES REQUESTED" in PROTOCOL.md).
 With --run it is also the queue runner (replaces gpt-watcher / claude-watcher): every 5 s it runs the
 CLI for each pending <name>.json, oldest first, one at a time, and writes:
     <name>.status    JSON with state (RUNNING, OK, ERR), start/stop, exit code and metadata.
@@ -88,22 +90,13 @@ SAFE_ARG = re.compile(r"^[A-Za-z0-9._:/@+\[\]-]{1,100}$")
 LOCK_NAME = ".monitor-runner.lock"
 MONITOR_PID_NAME = "ai-task-commander.pid"  # PID of the --run monitor, plain text
 POLL_SECONDS = 5
-# Review verdict in <name>.md: the last "Verdict: ..." / "VEREDICTE: ..." / "VEREDICTE GLOBAL: ..." line
-# (RP/1 review results in PROTOCOL.md end with exactly "VERDICT: READY" or "VERDICT: CHANGES REQUESTED")
-# (or such a heading and the next line), else the last line holding only a known verdict
-# (e.g. "**CHANGES REQUESTED**"). Most jobs have none.
-VERDICT_LABEL_RE = re.compile(
-    r"(?im)^[\s>#*_|-]*(?:[^\W\d_]+\s+)?(?:verdict|veredicte|veredicto)\b(?:\s+[^\W\d_]+)?"
-    r"[*_`\s]*([:\-–—]?)(.*)$"
-)
-VERDICTS = ["CHANGES REQUESTED", "REQUEST CHANGES", "CHANGES_REQUESTED", "REQUEST_CHANGES",
-            "APPROVED WITH COMMENTS", "APPROVED", "APPROVE", "REJECTED", "NEEDS WORK", "LGTM"]
-VERDICT_ALT = "|".join(re.escape(v) for v in VERDICTS)
-VERDICT_LINE_RE = re.compile(rf"(?m)^[\s>#*_`✅❌⚠️-]*({VERDICT_ALT})[\s*_`.!]*$")
-VERDICT_MAX = 24
-# Verdict colours: negative words are checked first ("NO VÀLID", "NOT APPROVED" are red).
-VERDICT_BAD_RE = re.compile(r"\b(?:NO|NOT|NON)\b|CHANGE|REJECT|FAIL|BLOCK|NEED|DISCREP|CANVI|CAMBIO|INVALID|INVÀLID")
-VERDICT_GOOD_RE = re.compile(r"READY|APPROV|APROV|APROB|LGTM|PASS|ACORD|ACUERDO|VALID|VÀLID|VÁLID|\bOK\b|CORRECT")
+# Review verdicts are shown only with --protocol FILE, and only in the form that file declares:
+# a template line (inside a ``` block) of alternatives sharing one label, e.g. RP/1's
+#     VERDICT: READY | VERDICT: CHANGES REQUESTED
+# A job's verdict is the last non-blank line of its <name>.md when it equals one of those lines.
+VERDICT_PART_RE = re.compile(r"^([^\s:<>|#][^:<>|#]*?):\s*([^\s:<>|#][^:<>|#]*?)$")
+# Colour by declaration order: the first alternative is the OK verdict (green), the last the KO one (red),
+# any in between yellow.
 
 
 class Runner(str, Enum):
@@ -200,42 +193,38 @@ def read_job(path: Path) -> tuple[dict, str | None]:
     return job, None
 
 
-def find_verdict(text: str) -> str:
-    """Review verdict stated in an answer (e.g. CHANGES REQUESTED), or "" when it states none.
-
-    The last one wins: review prompts ask for the verdict on the last line, and an answer may quote
-    an earlier one first.
-    """
-    verdict = ""
-    for m in VERDICT_LABEL_RE.finditer(text):
-        value = m.group(2).strip()
-        if not value.strip("*_`#: "):  # "## Verdict" heading: the verdict is on the next non-blank line
-            rest = text[m.end():]
-            value = next((ln.strip() for ln in rest.splitlines() if ln.strip()), "")
-        elif not m.group(1):
-            continue  # prose such as "the verdict depends on...", not a "Verdict: ..." label
-        bold = re.search(r"\*\*(.+?)\*\*|__(.+?)__|`(.+?)`", value)
-        if bold:
-            value = next(g for g in bold.groups() if g)
-        value = re.split(r"\s[-–—(]\s?|[.;:(|]", value.strip("*_`#>: "))[0].strip("*_`#>: ")
-        if value:
-            value = value.replace("_", " ").upper()
-            verdict = value if len(value) <= VERDICT_MAX else value[: VERDICT_MAX - 1] + "…"
-    if verdict:
-        return verdict
-    found = VERDICT_LINE_RE.findall(text)
-    return found[-1].replace("_", " ") if found else ""
+def load_verdicts(path: Path) -> dict[str, str]:
+    """Verdict lines declared by a protocol file: {"VERDICT: READY": "READY", ...} (empty if none)."""
+    verdicts: dict[str, str] = {}
+    fenced = False
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if not fenced:
+            continue
+        line = re.sub(r"\s+#\s.*$", "", line).strip()  # template comment
+        parts = [VERDICT_PART_RE.match(p.strip()) for p in line.split("|")]
+        if len(parts) < 2 or not all(parts) or len({m.group(1) for m in parts}) != 1:
+            continue
+        for m in parts:
+            verdicts.setdefault(f"{m.group(1)}: {m.group(2)}", m.group(2))
+    return verdicts
 
 
-def verdict_text(verdict: str) -> Text:
+def find_verdict(text: str, verdicts: dict[str, str]) -> str:
+    """Verdict of an answer: its last non-blank line when it is a declared verdict line, else ""."""
+    last = next((ln.strip() for ln in reversed(text.splitlines()) if ln.strip()), "")
+    return verdicts.get(last, "")
+
+
+def verdict_text(verdict: str, verdicts: dict[str, str]) -> Text:
     if not verdict:
         return Text("—", style="dim")
-    if VERDICT_BAD_RE.search(verdict):
-        style = "bold red"
-    elif VERDICT_GOOD_RE.search(verdict):
-        style = "bold green"
-    else:
-        style = "bold yellow"
+    values = list(dict.fromkeys(verdicts.values()))
+    i = values.index(verdict) if verdict in values else -1
+    style = ("bold" if i < 0 else "bold green" if i == 0 else "bold red" if i == len(values) - 1
+             else "bold yellow")
     return Text(verdict, style=style)
 
 
@@ -341,11 +330,12 @@ class Job:
 class QueueScanner:
     """Builds the job list from the queue directory. Read-only."""
 
-    def __init__(self, queue: Path, runner: Runner):
+    def __init__(self, queue: Path, runner: Runner, verdicts: dict[str, str] | None = None):
         self.queue = queue
         self.runner_override = runner
         self.runner = runner.value if runner != Runner.auto else "unknown"
         self._job_cache: dict[Path, tuple[tuple, dict, str | None]] = {}
+        self.verdicts = verdicts or {}  # declared verdict lines (--protocol); empty: no verdicts
         self._verdict_cache: dict[Path, tuple[tuple, str]] = {}
         self.watcher: psutil.Process | None = None
         self.watcher_exact = False  # True when the process command line names the watcher script
@@ -364,12 +354,12 @@ class QueueScanner:
         return job, error
 
     def _verdict(self, md: FileInfo | None) -> str:
-        if md is None or md.size == 0:
+        if not self.verdicts or md is None or md.size == 0:
             return ""
         cached = self._verdict_cache.get(md.path)
         if cached and cached[0] == md.sig:
             return cached[1]
-        verdict = find_verdict(read_text(md.path, MD_MAX, tail=False)[0])
+        verdict = find_verdict(read_text(md.path, MD_MAX, tail=True)[0], self.verdicts)
         self._verdict_cache[md.path] = (md.sig, verdict)
         return verdict
 
@@ -1192,13 +1182,13 @@ class MonitorApp(App):
     ]
 
     def __init__(self, queue: Path, refresh: int, rows: int, runner: Runner,
-                 job_runner: QueueRunner | None = None):
+                 job_runner: QueueRunner | None = None, verdicts: dict[str, str] | None = None):
         super().__init__()
         self.queue = queue
         self.job_runner = job_runner  # built-in runner (--run), or None when only monitoring
         self.refresh_secs = refresh
         self.rows = rows  # job rows visible at once; the table scrolls through the whole queue
-        self.scanner = QueueScanner(queue, runner)
+        self.scanner = QueueScanner(queue, runner, verdicts)
         self.jobs: list[Job] = []
         self.all_jobs: list[Job] = []
         self.selected: str | None = None
@@ -1343,7 +1333,7 @@ class MonitorApp(App):
                 "start": Text(fmt_ts(job.start)),
                 "stop": Text(fmt_ts(job.stop)),
                 "dur": Text(fmt_dur(job.duration(now)), style="yellow" if job.status == RUNNING else ""),
-                "verdict": verdict_text(job.verdict),
+                "verdict": verdict_text(job.verdict, self.scanner.verdicts),
             }
             rows.append((job.name, [cells[k.value] for k in table.columns]))
         if current == names:
@@ -1495,7 +1485,7 @@ class MonitorApp(App):
         self.query_one("#output-body", Static).update(out_body)
         title = Text(f"Output · {job.name}.md")
         if job.verdict:
-            title.append(" · ").append_text(verdict_text(job.verdict))
+            title.append(" · ").append_text(verdict_text(job.verdict, self.scanner.verdicts))
         out.border_title = title
         out.border_subtitle = out_sub
 
@@ -1771,11 +1761,23 @@ def main(
         None, "--workdir", "-w", file_okay=False, resolve_path=True,
         help="With --run: working directory of the CLI (default: the queue's parent directory).",
     ),
+    protocol: Path | None = typer.Option(
+        None, "--protocol", "-p", exists=True, dir_okay=False, resolve_path=True,
+        help="Protocol file (e.g. PROTOCOL.md) declaring the verdict line of review answers, as "
+             "'VERDICT: READY | VERDICT: CHANGES REQUESTED' in a ``` block (OK verdict first, KO last): shows each job's verdict, first in green, last in red.",
+    ),
 ) -> None:
     """Text UI to monitor a codex / claude job queue and, with --run, to run it."""
     if not run and (force or workdir is not None):
         typer.secho("Error: --force and --workdir need --run.", fg="red", err=True)
         raise typer.Exit(2)
+    verdicts = None
+    if protocol is not None:
+        verdicts = load_verdicts(protocol)
+        if not verdicts:
+            typer.secho(f"Error: {protocol} declares no verdict line ('LABEL: A | LABEL: B' in a ``` block).",
+                        fg="red", err=True)
+            raise typer.Exit(1)
     job_runner = None
     if run:
         job_runner = prepare_runner(queue, runner, workdir, force)
@@ -1785,7 +1787,7 @@ def main(
         typer.secho(f"Error: the queue directory {queue} does not exist.", fg="red", err=True)
         raise typer.Exit(1)
     try:
-        MonitorApp(queue, refresh, jobs, runner, job_runner).run()
+        MonitorApp(queue, refresh, jobs, runner, job_runner, verdicts).run()
     finally:
         if job_runner is not None:
             # Abort the running job (its .json stays pending), wait for the cleanup, free the lock.

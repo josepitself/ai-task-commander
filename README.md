@@ -15,6 +15,7 @@ No facis córrer mai dos runners sobre la mateixa cua. El monitor no arrenca amb
 ```
 uv run ai-task-commander.py QUEUE_DIR [--run [-f|--force] [-w|--workdir DIR]]
                                       [-r|--refresh SEGONS] [-n|--jobs N] [--runner auto|codex|claude]
+                                      [-p|--protocol FITXER]
 uv run ai-task-commander.py -h|--help
 
 Mostra les feines de la cua QUEUE_DIR i, amb --run, executa la CLI (codex o claude) per cada
@@ -33,11 +34,17 @@ Opcions:
   -r, --refresh SEGONS  Interval de refresc de la pantalla (per defecte 15; també amb /).
   -n, --jobs N          Files de feines visibles alhora (1-50, per defecte 5; també amb /);
                         la llista es desplaça.
+  -p, --protocol FITXER Fitxer de protocol (p. ex. PROTOCOL.md) que declara la línia de veredicte
+                        de les respostes, com `VERDICT: READY | VERDICT: CHANGES REQUESTED` dins
+                        un bloc ```, primer el d'OK (verd) i l'últim el de KO (vermell). Mostra el
+                        veredicte de cada feina. Sense aquesta opció no se'n
+                        mostra cap.
   -h, --help            Mostra l'ajuda i surt.
 
 Codis de sortida en arrencar:
   1  Feines pendents sense --force, la cua és un fitxer o no existeix (sense --run), el
-     directori de treball no existeix, no es troba la CLI, o ja hi ha un runner a la cua.
+     directori de treball no existeix, no es troba la CLI, ja hi ha un runner a la cua, o el
+     fitxer de --protocol no declara cap línia de veredicte.
   2  Opció desconeguda, o --force / --workdir sense --run.
 ```
 
@@ -58,6 +65,7 @@ uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue --run           # 
 uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue --run --force   # i processa les pendents
 uv run ai-task-commander.py D:\proves\claude-queue --run -w D:\proves
 uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue                 # només mirar
+uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue -p PROTOCOL.md  # amb veredictes RP/1
 ```
 
 ```bash
@@ -66,7 +74,7 @@ uv run ai-task-commander.py ~/Claude/HomeAssistant/gpt-queue --run
 
 ## Pantalla
 
-A dalt, totes les feines de la cua, de la més nova a la més antiga, en una taula de N files visibles que es desplaça: estat (`OK`, `ERR`, `RUNNING` o `QUEUED`), model, effort, hora d'entrada, inici, fi i durada. Si alguna feina de la cua és una revisió amb veredicte al `.md` (l'última línia `VERDICT: ...`, `VEREDICTE: ...` o `VEREDICTE GLOBAL: ...`, com la línia final de les respostes RP/1 de `PROTOCOL.md`; també un encapçalament *Verdict* seguit del veredicte, o una línia només amb `APPROVED`, `CHANGES REQUESTED`, etc.), apareix l'última columna *Verdict* i el títol del panell de sortida també el mostra (`Output · issue94-terra-3.md · CHANGES REQUESTED`); les feines sense veredicte hi surten amb `—`, i en una cua sense cap veredicte la columna no es mostra. A sota, la petició de la feina seleccionada (esquerra) i el `.md` i el `.err` (dreta). Amb `--run`, la barra superior mostra `▶ RUNNER` i el directori de treball, i cada inici i final de feina surt com a notificació (`▶ Started`, `✔ ... OK`, `✖ ... ERROR`). La línia d'estat mostra el runner, el temps que fa que corre (i la feina en curs), el PID del monitor (amb `--run`, el mateix de `ai-task-commander.pid`), l'interval de refresc i la ruta de la cua. A la dreta de la barra de tecles, `⤒ ON/OFF` i `md ON/OFF` indiquen si la selecció segueix les feines noves i si es renderitza el Markdown.
+A dalt, totes les feines de la cua, de la més nova a la més antiga, en una taula de N files visibles que es desplaça: estat (`OK`, `ERR`, `RUNNING` o `QUEUED`), model, effort, hora d'entrada, inici, fi i durada. Amb `--protocol FITXER`, el veredicte de revisió de cada feina: l'última línia no buida del `.md` quan és exactament una de les línies de veredicte que declara el fitxer. Es declaren dins un bloc ``` com a alternatives amb la mateixa etiqueta (a `PROTOCOL.md`, `VERDICT: READY | VERDICT: CHANGES REQUESTED`, l'última línia de les respostes RP/1); no se'n dedueix cap altra forma. El veredicte surt a l'última columna *Verdict* i al títol del panell de sortida (`Output · issue94-terra-3.md · CHANGES REQUESTED`), en verd la primera alternativa declarada (la d'OK, `READY`), en vermell l'última (la de KO, `CHANGES REQUESTED`) i en groc les del mig, si n'hi ha; les feines sense veredicte hi surten amb `—`, i si cap feina en té la columna no es mostra. Sense `--protocol` no hi ha columna ni veredicte al títol. A sota, la petició de la feina seleccionada (esquerra) i el `.md` i el `.err` (dreta). Amb `--run`, la barra superior mostra `▶ RUNNER` i el directori de treball, i cada inici i final de feina surt com a notificació (`▶ Started`, `✔ ... OK`, `✖ ... ERROR`). La línia d'estat mostra el runner, el temps que fa que corre (i la feina en curs), el PID del monitor (amb `--run`, el mateix de `ai-task-commander.pid`), l'interval de refresc i la ruta de la cua. A la dreta de la barra de tecles, `⤒ ON/OFF` i `md ON/OFF` indiquen si la selecció segueix les feines noves i si es renderitza el Markdown.
 
 | Tecla | Acció |
 |---|---|
