@@ -37,8 +37,8 @@ Opcions:
   -p, --protocol FITXER Fitxer de protocol (p. ex. PROTOCOL.md) que declara la línia de veredicte
                         de les respostes, com `VERDICT: READY | VERDICT: CHANGES REQUESTED` dins
                         un bloc ```, primer el d'OK (verd) i l'últim el de KO (vermell). Mostra el
-                        veredicte de cada feina. Sense aquesta opció no se'n
-                        mostra cap.
+                        veredicte de cada feina i la tecla p mostra el fitxer. Sense aquesta
+                        opció no se'n mostra cap.
   -h, --help            Mostra l'ajuda i surt.
 
 Codis de sortida en arrencar:
@@ -84,6 +84,7 @@ A dalt, totes les feines de la cua, de la més nova a la més antiga, en una tau
 | `s` | Amb un panell ampliat, el mostra al costat d'un altre: des de *Request*, la petició i la sortida (`.md`); des d'*Output* o *Session log*, la sortida i el log (`.err`). `Tab` o `←` `→` canvien entre tots dos i `s` torna al panell sol |
 | `f` | Activa o desactiva *Follow new jobs*: en entrar una feina nova a la cua, la selecció salta a la més nova |
 | `m` | Markdown renderitzat o text en brut |
+| `p` | Només amb `--protocol`: mostra el fitxer de protocol (desplaçable; `Esc`, `p` o `q` el tanquen) |
 | `r` | Refresca ara |
 | `/` | Configuració (només per a la sessió): interval de refresc en segons, files de feines visibles (`-n`) i *Follow new jobs* (en entrar una feina nova a la cua, la selecció salta a la més nova; desactivat per defecte). `Tab` canvia de camp, `Espai` marca la casella, `Enter` aplica |
 | `q` | Surt. Amb una feina en curs demana confirmació: `y` atura la CLI i la feina queda pendent |

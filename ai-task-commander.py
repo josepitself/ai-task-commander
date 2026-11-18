@@ -1072,6 +1072,34 @@ class ConfirmQuitScreen(ModalScreen[bool]):
         self.dismiss(yes)
 
 
+class ProtocolScreen(ModalScreen[None]):
+    """The --protocol file (p): scrollable, Markdown rendered or raw as in the output pane."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("p", "close", show=False),
+        Binding("q", "close", show=False),
+    ]
+
+    def __init__(self, path: Path, markdown: bool):
+        super().__init__()
+        self.path = path
+        self.markdown = markdown
+
+    def compose(self) -> ComposeResult:
+        text, truncated = read_text(self.path, MD_MAX, tail=False)
+        with VerticalScroll(id="protocol-box") as box:
+            box.border_title = f"Protocol · {self.path.name}"
+            box.border_subtitle = ("first 1 MB · " if truncated else "") + "Esc/p close"
+            yield Static(Markdown(text) if self.markdown else Text(text), id="protocol-body")
+
+    def on_mount(self) -> None:
+        self.query_one("#protocol-box").focus()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 # --- Main app -----------------------------------------------------------------
 
 PANES = ["#jobs", "#request", "#output", "#errors"]
@@ -1161,6 +1189,12 @@ class MonitorApp(App):
     #dlg-title { text-style: bold; color: $accent; margin-bottom: 1; }
     #follow-check { width: 100%; margin-top: 1; }
     ConfirmQuitScreen { align: center middle; background: $background 60%; }
+    ProtocolScreen { align: center middle; background: $background 60%; }
+    #protocol-box {
+        width: 90%; height: 90%; padding: 0 1; border: thick $accent; background: $surface;
+        border-title-color: $accent; border-title-style: bold; border-subtitle-color: $text-muted;
+    }
+    #protocol-body { width: 100%; height: auto; }
     #dlg-help { color: $text-muted; margin-top: 1; }
     """
 
@@ -1173,6 +1207,7 @@ class MonitorApp(App):
         Binding("m", "toggle_markdown", "Markdown"),
         Binding("z", "zoom", "Zoom pane"),
         Binding("s", "split", "Split zoom", show=False),
+        Binding("p", "protocol", "Protocol", show=False),  # only with --protocol
         Binding("escape", "back", show=False),
         Binding("tab", "pane(1)", show=False, priority=True),
         Binding("shift+tab", "pane(-1)", show=False, priority=True),
@@ -1182,9 +1217,11 @@ class MonitorApp(App):
     ]
 
     def __init__(self, queue: Path, refresh: int, rows: int, runner: Runner,
-                 job_runner: QueueRunner | None = None, verdicts: dict[str, str] | None = None):
+                 job_runner: QueueRunner | None = None, verdicts: dict[str, str] | None = None,
+                 protocol: Path | None = None):
         super().__init__()
         self.queue = queue
+        self.protocol = protocol  # --protocol file, shown with p
         self.job_runner = job_runner  # built-in runner (--run), or None when only monitoring
         self.refresh_secs = refresh
         self.rows = rows  # job rows visible at once; the table scrolls through the whole queue
@@ -1576,6 +1613,8 @@ class MonitorApp(App):
         # App bindings stay active under the modal: keep keys for the config inputs (Tab moves between them).
         if isinstance(self.screen, ModalScreen) and action not in ("quit", "focus_next", "focus_previous"):
             return False
+        if action == "protocol" and self.protocol is None:
+            return False
         return True
 
     async def action_quit(self) -> None:
@@ -1655,6 +1694,10 @@ class MonitorApp(App):
         self.query_one(f"#{target_id}").focus()
         self.screen.maximize(panes, container=False)
 
+    def action_protocol(self) -> None:
+        if self.protocol is not None:
+            self.push_screen(ProtocolScreen(self.protocol, self.markdown))
+
     def action_pick(self, n: int) -> None:
         if 1 <= n <= len(self.jobs):
             table = self.query_one("#jobs", DataTable)
@@ -1683,6 +1726,8 @@ class MonitorApp(App):
         else:  # zoomed: the keys scroll the pane, the job list is hidden
             keys = ("[b]↑↓ PgUp[/]/[b]PgDn[/] [b]Home[/]/[b]End[/] scroll  [b]s[/] split  [b]z[/]/[b]Esc[/] unzoom  "
                     "[b]f[/] follow  [b]m[/] md  [b]r[/] refresh  [b]/[/] config  [b]q[/] quit")
+        if self.protocol is not None:
+            keys = keys.replace("[b]q[/] quit", "[b]p[/] protocol  [b]q[/] quit")
         self.query_one("#status-keys", Static).update(Text.from_markup(keys))
 
     @staticmethod
@@ -1764,7 +1809,7 @@ def main(
     protocol: Path | None = typer.Option(
         None, "--protocol", "-p", exists=True, dir_okay=False, resolve_path=True,
         help="Protocol file (e.g. PROTOCOL.md) declaring the verdict line of review answers, as "
-             "'VERDICT: READY | VERDICT: CHANGES REQUESTED' in a ``` block (OK verdict first, KO last): shows each job's verdict, first in green, last in red.",
+             "'VERDICT: READY | VERDICT: CHANGES REQUESTED' in a ``` block (OK verdict first, KO last): shows each job's verdict, first in green, last in red. Key p shows the file.",
     ),
 ) -> None:
     """Text UI to monitor a codex / claude job queue and, with --run, to run it."""
@@ -1787,7 +1832,7 @@ def main(
         typer.secho(f"Error: the queue directory {queue} does not exist.", fg="red", err=True)
         raise typer.Exit(1)
     try:
-        MonitorApp(queue, refresh, jobs, runner, job_runner, verdicts).run()
+        MonitorApp(queue, refresh, jobs, runner, job_runner, verdicts, protocol).run()
     finally:
         if job_runner is not None:
             # Abort the running job (its .json stays pending), wait for the cleanup, free the lock.
