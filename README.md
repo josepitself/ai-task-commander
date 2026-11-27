@@ -1,150 +1,153 @@
 # ai-task-commander
 
-Permet a Claude Code delegar feines a un altre model a través de la seva CLI (`codex` o `claude`), mitjançant una cua de fitxers.
+[Català](README.cat.md)
 
-`ai-task-commander.py` és una interfície de text que mostra la cua i, amb `--run`, també l'executa: un sol terminal, a Windows i a Linux. Per cada feina escriu un fitxer `<nom>.status` amb l'estat, les hores d'inici i fi i el codi de sortida.
+Lets Claude Code delegate work to another model through its CLI (`codex` or `claude`), using a file-based queue.
 
-El nom ve del clàssic [Norton Commander](https://en.wikipedia.org/wiki/Norton_Commander), al qual s'assembla la interfície: una barra de títol a dalt, panells emmarcats que es recorren amb `Tab` i les fletxes, una barra inferior amb les tecles disponibles i tot es fa des del teclat. Aquí, en lloc de fitxers, els panells mostren les feines de la IA: la cua, la petició, la resposta i els errors.
+`ai-task-commander.py` is a text UI that shows the queue and, with `--run`, also runs it: a single terminal, on Windows and on Linux. For each job it writes a `<name>.status` file with the state, start and end times and the exit code.
 
-Substitueix els antics watchers en PowerShell i bash (`gpt-watcher` / `claude-watcher`, `.ps1` i `.sh`), que ja no formen part del repositori (són a l'historial de git fins al commit `c9e1708`). Les cues que van processar es poden seguir obrint amb el monitor: vegeu [Feines sense .status](#feines-sense-status).
+The name comes from the classic [Norton Commander](https://en.wikipedia.org/wiki/Norton_Commander), whose interface it resembles: a title bar at the top, framed panels you move through with `Tab` and the arrow keys, a bottom bar with the available keys, and everything done from the keyboard. Here, instead of files, the panels show the AI jobs: the queue, the request, the answer and the errors.
 
-No facis córrer mai dos runners sobre la mateixa cua. El monitor no arrenca amb `--run` si n'hi ha un altre amb `--run`, si hi ha una feina amb `.pid` d'un procés viu, o si detecta un dels antics watchers.
+It replaces the old PowerShell and bash watchers (`gpt-watcher` / `claude-watcher`, `.ps1` and `.sh`), which are no longer part of the repository (they are in the git history up to commit `c9e1708`). The queues they processed can still be opened with the monitor: see [Jobs without .status](#jobs-without-status).
 
-## Sinopsi
+Never run two runners on the same queue. The monitor refuses to start with `--run` if another one is running with `--run`, if there is a job with a `.pid` of a live process, or if it detects one of the old watchers.
+
+## Synopsis
 
 ```
 uv run ai-task-commander.py QUEUE_DIR [--run [-f|--force] [-w|--workdir DIR]]
-                                      [-r|--refresh SEGONS] [-n|--jobs N] [--runner auto|codex|claude]
-                                      [-p|--protocol FITXER]
+                                      [-r|--refresh SECONDS] [-n|--jobs N] [--runner auto|codex|claude]
+                                      [-p|--protocol FILE]
 uv run ai-task-commander.py -h|--help
 
-Mostra les feines de la cua QUEUE_DIR i, amb --run, executa la CLI (codex o claude) per cada
-feina <nom>.json que hi aparegui. Surt amb q (si hi ha una feina en curs, demana confirmació).
+Shows the jobs in queue QUEUE_DIR and, with --run, runs the CLI (codex or claude) for each
+<name>.json job that appears in it. Quit with q (if a job is running, asks for confirmation).
 
-Opcions:
-  --run                 Executa també la cua (substitueix gpt-watcher / claude-watcher) i escriu
-                        un <nom>.status per feina. Sense --run només llegeix la cua.
-  -f, --force           (amb --run) Arrenca encara que hi hagi feines pendents (*.json) i les
-                        processa per ordre. Sense aquesta opció, si n'hi ha surt amb codi 1.
-  -w, --workdir DIR     (amb --run) Directori de treball de la CLI. Ha d'existir.
-                        Per defecte: el directori pare de la cua.
+Options:
+  --run                 Also run the queue (replaces gpt-watcher / claude-watcher) and write
+                        a <name>.status per job. Without --run it only reads the queue.
+  -f, --force           (with --run) Start even if there are pending jobs (*.json) and process
+                        them in order. Without this option, if there are any it exits with code 1.
+  -w, --workdir DIR     (with --run) Working directory of the CLI. Must exist.
+                        Default: the queue's parent directory.
   --runner auto|codex|claude
-                        CLI de la cua. Amb auto es dedueix del nom de la cua (gpt o codex →
-                        codex, claude → claude) o, sense --run, del runner que hi corre.
-  -r, --refresh SEGONS  Interval de refresc de la pantalla (per defecte 15; també amb /).
-  -n, --jobs N          Files de feines visibles alhora (1-50, per defecte 5; també amb /);
-                        la llista es desplaça.
-  -p, --protocol FITXER Fitxer de protocol (p. ex. PROTOCOL.md) que declara la línia de veredicte
-                        de les respostes, com `VERDICT: READY | VERDICT: CHANGES REQUESTED` dins
-                        un bloc ```, primer el d'OK (verd) i l'últim el de KO (vermell). Mostra el
-                        veredicte de cada feina i la tecla p mostra el fitxer. Sense aquesta
-                        opció no se'n mostra cap.
-  -h, --help            Mostra l'ajuda i surt.
+                        CLI of the queue. With auto it is inferred from the queue name (gpt or
+                        codex → codex, claude → claude) or, without --run, from the runner
+                        running on it.
+  -r, --refresh SECONDS Screen refresh interval (default 15; also with /).
+  -n, --jobs N          Job rows visible at once (1-50, default 5; also with /);
+                        the list scrolls.
+  -p, --protocol FILE   Protocol file (e.g. PROTOCOL.md) declaring the verdict line of the
+                        answers, such as `VERDICT: READY | VERDICT: CHANGES REQUESTED` inside
+                        a ``` block, the OK one first (green) and the KO one last (red). Shows
+                        each job's verdict, and key p shows the file. Without this option no
+                        verdict is shown.
+  -h, --help            Show the help and exit.
 
-Codis de sortida en arrencar:
-  1  Feines pendents sense --force, la cua és un fitxer o no existeix (sense --run), el
-     directori de treball no existeix, no es troba la CLI, ja hi ha un runner a la cua, o el
-     fitxer de --protocol no declara cap línia de veredicte.
-  2  Opció desconeguda, o --force / --workdir sense --run.
+Exit codes at startup:
+  1  Pending jobs without --force, the queue is a file or does not exist (without --run), the
+     working directory does not exist, the CLI is not found, a runner is already on the queue,
+     or the --protocol file declares no verdict line.
+  2  Unknown option, or --force / --workdir without --run.
 ```
 
-| Cua | CLI | Valors de `model` i `effort` |
+| Queue | CLI | `model` and `effort` values |
 |---|---|---|
-| `...\gpt-queue` | `codex` (OpenAI) | `codex exec --model` i `model_reasoning_effort` |
-| `...\claude-queue` | `claude` (Claude Code) | `claude --model` i `claude --effort` (`low`, `medium`, `high`, `xhigh`, `max`) |
+| `...\gpt-queue` | `codex` (OpenAI) | `codex exec --model` and `model_reasoning_effort` |
+| `...\claude-queue` | `claude` (Claude Code) | `claude --model` and `claude --effort` (`low`, `medium`, `high`, `xhigh`, `max`) |
 
-## Requisits
+## Requirements
 
-- [uv](https://docs.astral.sh/uv/). Les dependències del monitor (typer, textual, psutil) van declarades dins l'script i uv les instal·la soles la primera vegada.
-- Amb `--run`, la CLI corresponent al `PATH` amb sessió iniciada. A Windows ha de ser un executable real (`codex.exe`/`codex.cmd`, `claude.exe`/`claude.cmd`), com deixa la instal·lació amb npm o l'instal·lador oficial. A WSL cal una instal·lació Linux de la CLI: el `codex` de npm instal·lat a Windows apareix al `PATH` de WSL però llança el binari de Windows i falla.
+- [uv](https://docs.astral.sh/uv/). The monitor's dependencies (typer, textual, psutil) are declared inside the script and uv installs them on its own the first time.
+- With `--run`, the matching CLI on the `PATH` and logged in. On Windows it must be a real executable (`codex.exe`/`codex.cmd`, `claude.exe`/`claude.cmd`), as installed by npm or the official installer. On WSL you need a Linux install of the CLI: the npm `codex` installed on Windows shows up on the WSL `PATH` but launches the Windows binary and fails.
 
-## Execució
+## Running
 
 ```powershell
 uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue --run           # monitor + runner
-uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue --run --force   # i processa les pendents
-uv run ai-task-commander.py D:\proves\claude-queue --run -w D:\proves
-uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue                 # només mirar
-uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue -p PROTOCOL.md  # amb veredictes RP/1
+uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue --run --force   # and process pending jobs
+uv run ai-task-commander.py D:\tests\claude-queue --run -w D:\tests
+uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue                 # view only
+uv run ai-task-commander.py C:\Claude\HomeAssistant\gpt-queue -p PROTOCOL.md  # with RP/1 verdicts
 ```
 
 ```bash
 uv run ai-task-commander.py ~/Claude/HomeAssistant/gpt-queue --run
 ```
 
-## Pantalla
+## Screen
 
-A dalt, totes les feines de la cua, de la més nova a la més antiga, en una taula de N files visibles que es desplaça: estat (`OK`, `ERR`, `RUNNING` o `QUEUED`), model, effort, hora d'entrada, inici, fi i durada. Amb `--protocol FITXER`, el veredicte de revisió de cada feina: l'última línia no buida del `.md` quan és exactament una de les línies de veredicte que declara el fitxer. Es declaren dins un bloc ``` com a alternatives amb la mateixa etiqueta (a `PROTOCOL.md`, `VERDICT: READY | VERDICT: CHANGES REQUESTED`, l'última línia de les respostes RP/1); no se'n dedueix cap altra forma. El veredicte surt a l'última columna *Verdict* i al títol del panell de sortida (`Output · issue94-terra-3.md · CHANGES REQUESTED`), en verd la primera alternativa declarada (la d'OK, `READY`), en vermell l'última (la de KO, `CHANGES REQUESTED`) i en groc les del mig, si n'hi ha; les feines sense veredicte hi surten amb `—`, i si cap feina en té la columna no es mostra. Sense `--protocol` no hi ha columna ni veredicte al títol. A sota, la petició de la feina seleccionada (esquerra) i el `.md` i el `.err` (dreta). Amb `--run`, la barra superior mostra `▶ RUNNER` i el directori de treball, i cada inici i final de feina surt com a notificació (`▶ Started`, `✔ ... OK`, `✖ ... ERROR`). La línia d'estat mostra el runner, el temps que fa que corre (i la feina en curs), el PID del monitor (amb `--run`, el mateix de `ai-task-commander.pid`), l'interval de refresc i la ruta de la cua. A la dreta de la barra de tecles, `⤒ ON/OFF` i `md ON/OFF` indiquen si la selecció segueix les feines noves i si es renderitza el Markdown.
+At the top, all the jobs in the queue, newest first, in a table of N visible rows that scrolls: state (`OK`, `ERR`, `RUNNING` or `QUEUED`), model, effort, queued time, start, end and duration. With `--protocol FILE`, each job's review verdict: the last non-empty line of the `.md` when it is exactly one of the verdict lines the file declares. They are declared inside a ``` block as alternatives with the same label (in `PROTOCOL.md`, `VERDICT: READY | VERDICT: CHANGES REQUESTED`, the last line of RP/1 answers); no other form is inferred. The verdict appears in the last column, *Verdict*, and in the output panel title (`Output · issue94-terra-3.md · CHANGES REQUESTED`), in green the first declared alternative (the OK one, `READY`), in red the last one (the KO one, `CHANGES REQUESTED`) and in yellow any in between; jobs without a verdict show `—`, and if no job has one the column is hidden. Without `--protocol` there is no column and no verdict in the title. Below, the selected job's request (left) and the `.md` and `.err` (right). With `--run`, the top bar shows `▶ RUNNER` and the working directory, and each job start and end appears as a notification (`▶ Started`, `✔ ... OK`, `✖ ... ERROR`). The status line shows the runner, how long it has been running (and the current job), the monitor's PID (with `--run`, the same as in `ai-task-commander.pid`), the refresh interval and the queue path. On the right of the key bar, `⤒ ON/OFF` and `md ON/OFF` show whether the selection follows new jobs and whether Markdown is rendered.
 
-| Tecla | Acció |
+| Key | Action |
 |---|---|
-| `↑` `↓` `PgUp` `PgDn` `Home` `End`, `1`-`9` | Tria feina (la llista es desplaça per tota la cua) |
-| `Tab`, `←` `→` | Canvia de panell; `↑` `↓` `PgUp` `PgDn` `Home` `End` desplacen el panell actiu |
-| `z` / `Esc` | Amplia el panell actiu / torna |
-| `s` | Amb un panell ampliat, el mostra al costat d'un altre: des de *Request*, la petició i la sortida (`.md`); des d'*Output* o *Session log*, la sortida i el log (`.err`). `Tab` o `←` `→` canvien entre tots dos i `s` torna al panell sol |
-| `f` | Activa o desactiva *Follow new jobs*: en entrar una feina nova a la cua, la selecció salta a la més nova |
-| `m` | Markdown renderitzat o text en brut |
-| `p` | Només amb `--protocol`: mostra el fitxer de protocol (desplaçable; `Esc`, `p` o `q` el tanquen) |
-| `r` | Refresca ara |
-| `/` | Configuració (només per a la sessió): interval de refresc en segons, files de feines visibles (`-n`) i *Follow new jobs* (en entrar una feina nova a la cua, la selecció salta a la més nova; desactivat per defecte). `Tab` canvia de camp, `Espai` marca la casella, `Enter` aplica |
-| `q` | Surt. Amb una feina en curs demana confirmació: `y` atura la CLI i la feina queda pendent |
+| `↑` `↓` `PgUp` `PgDn` `Home` `End`, `1`-`9` | Select a job (the list scrolls through the whole queue) |
+| `Tab`, `←` `→` | Switch panel; `↑` `↓` `PgUp` `PgDn` `Home` `End` scroll the active panel |
+| `z` / `Esc` | Maximize the active panel / restore |
+| `s` | With a maximized panel, show it next to another one: from *Request*, the request and the output (`.md`); from *Output* or *Session log*, the output and the log (`.err`). `Tab` or `←` `→` switch between the two and `s` returns to the single panel |
+| `f` | Toggle *Follow new jobs*: when a new job enters the queue, the selection jumps to the newest |
+| `m` | Rendered Markdown or raw text |
+| `p` | Only with `--protocol`: show the protocol file (scrollable; `Esc`, `p` or `q` close it) |
+| `r` | Refresh now |
+| `/` | Settings (for the session only): refresh interval in seconds, visible job rows (`-n`) and *Follow new jobs* (when a new job enters the queue, the selection jumps to the newest; off by default). `Tab` switches field, `Space` toggles the checkbox, `Enter` applies |
+| `q` | Quit. With a job running it asks for confirmation: `y` stops the CLI and the job stays pending |
 
-Sense `--run`, el monitor detecta pel fitxer de bloqueig el monitor amb `--run` que executa la cua i en mostra el temps d'execució.
+Without `--run`, the monitor detects, through the lock file, the `--run` monitor that is running the queue and shows how long it has been running.
 
-## Directori de cua
+## Queue directory
 
-En arrencar amb `--run`, el monitor fa aquestes comprovacions abans d'obrir la pantalla:
+When starting with `--run`, the monitor makes these checks before opening the screen:
 
-| Estat de la ruta | Comportament |
+| Path state | Behaviour |
 |---|---|
-| No existeix | Es crea el directori i arrenca. |
-| Existeix sense feines pendents | Mostra el recompte de feines fetes i pendents i arrenca. |
-| Existeix amb feines pendents | Avís amb els noms dels `.json` pendents i sortida amb codi `1`. Amb `--force` es mostra l'avís, arrenca i es processen. |
-| Existeix amb `.json` que no són feines | Avís per cada fitxer; no compten com a pendents i no bloquegen l'arrencada. |
-| Ja hi corre un runner (un altre `--run`, un watcher antic, o un `.pid` d'un procés viu) | Error i sortida amb codi `1`. |
-| Existeix però és un fitxer | Error i sortida amb codi `1`. |
+| Does not exist | The directory is created and it starts. |
+| Exists with no pending jobs | Shows the count of done and pending jobs and starts. |
+| Exists with pending jobs | Warning with the names of the pending `.json` files and exit with code `1`. With `--force` the warning is shown, it starts and they are processed. |
+| Exists with `.json` files that are not jobs | A warning for each file; they do not count as pending and do not block startup. |
+| A runner is already running on it (another `--run`, an old watcher, or a `.pid` of a live process) | Error and exit with code `1`. |
+| Exists but is a file | Error and exit with code `1`. |
 
-Només compten com a pendents els fitxers `*.json` que són feines vàlides. L'històric (`*.json.done`, `*.status`, `*.md`, `*.err`) es conserva i no bloqueja l'arrencada. Cap directori existent no s'esborra ni se sobreescriu mai.
+Only `*.json` files that are valid jobs count as pending. The history (`*.json.done`, `*.status`, `*.md`, `*.err`) is kept and does not block startup. No existing directory is ever deleted or overwritten.
 
-**Contracte de la cua:** el directori de cua només conté feines, el seu històric, el `<nom>.pid` de la feina en curs, i el bloqueig i el `ai-task-commander.pid` del runner. Els fitxers que la feina necessiti (dades, diffs, prompts llargs) van a un altre lloc dins del directori de treball, o a la cua només si no tenen extensió `.json`. Un `.json` que no és una feina s'avisa un cop i s'ignora fins que canviï; és una xarxa de seguretat, no una invitació a guardar-hi dades.
+**Queue contract:** the queue directory only holds jobs, their history, the `<name>.pid` of the running job, and the runner's lock and `ai-task-commander.pid`. Files a job needs (data, diffs, long prompts) go elsewhere inside the working directory, or in the queue only if they don't have a `.json` extension. A `.json` that is not a job is warned about once and ignored until it changes; this is a safety net, not an invitation to store data there.
 
-## Format d'una feina
+## Job format
 
-Un fitxer `<nom>.json` dins la cua, codificat en UTF-8:
+A `<name>.json` file inside the queue, encoded in UTF-8:
 
 ```json
 {
   "model": "gpt-5.5",
   "effort": "medium",
-  "prompt": "Text de la petició"
+  "prompt": "Request text"
 }
 ```
 
-`model` i `effort` només poden contenir lletres, xifres i `._:/@+[]-`, perquè arriben a la línia d'ordres de la CLI. El `prompt` no té cap límit: s'envia a la CLI per l'entrada estàndard, en UTF-8.
+`model` and `effort` may only contain letters, digits and `._:/@+[]-`, because they end up on the CLI's command line. The `prompt` has no limit: it is sent to the CLI through standard input, in UTF-8.
 
-Les feines es processen d'una en una, per ordre de data de modificació, mirant la cua cada 5 segons. Un `<nom>.json` que no és JSON vàlid, és buit, li falta algun camp o té caràcters no permesos surt a la pantalla com a `ERR`, es notifica un cop i es deixa a la cua sense reanomenar; es torna a provar quan es modifica.
+Jobs are processed one at a time, in modification-date order, checking the queue every 5 seconds. A `<name>.json` that is not valid JSON, is empty, is missing a field or has disallowed characters shows up on screen as `ERR`, is notified once and left in the queue without renaming; it is retried when it is modified.
 
-`claude` s'executa amb `claude -p` (mode no interactiu): les eines que necessitarien confirmació es deneguen, així que si la feina ha de modificar fitxers cal configurar els permisos a la `settings.json` del directori de treball.
+`claude` is run with `claude -p` (non-interactive mode): tools that would need confirmation are denied, so if the job has to modify files you need to set up permissions in the working directory's `settings.json`.
 
-## Fitxers de sortida
+## Output files
 
-| Fitxer | Contingut |
+| File | Contents |
 |---|---|
-| `<nom>.status` | Estat de la feina en JSON (vegeu [Fitxer .status](#fitxer-status)). Si no existeix, la feina és a la cua. |
-| `<nom>.md` | Resposta final del model. Amb `codex`, si la feina falla no es crea. Amb `claude`, si la feina falla conté el missatge d'error de la CLI. |
-| `<nom>.err` | Sortida d'error estàndard de la CLI, tal com l'escriu. Amb `codex` sempre té contingut (el registre de la sessió) i, si falla, la línia `ERROR: ...` al final. Amb `claude` és buit si tot ha anat bé. |
-| `<nom>.json.done` | La feina original, reanomenada quan acaba. |
-| `<nom>.pid` | Només mentre la feina s'executa: el PID del procés de la CLI (vegeu [Fitxer .pid](#fitxer-pid)). |
-| `.monitor-runner.lock` | Només mentre hi ha un monitor amb `--run`: PID i dades del runner. Impedeix que n'arrenqui un segon. |
-| `ai-task-commander.pid` | Només mentre hi ha un monitor amb `--run`: el PID del monitor, només el número en una línia (com el [`<nom>.pid`](#fitxer-pid)). S'esborra en sortir; si el monitor mor de cop es queda, i el següent `--run` el sobreescriu. Per això `ai-task-commander` no és un nom de feina vàlid: un `ai-task-commander.json` surt com a `ERR` i no s'executa. |
+| `<name>.status` | Job state in JSON (see [.status file](#status-file)). If it does not exist, the job is queued. |
+| `<name>.md` | The model's final answer. With `codex`, if the job fails it is not created. With `claude`, if the job fails it contains the CLI's error message. |
+| `<name>.err` | The CLI's standard error, as written. With `codex` it always has content (the session log) and, on failure, the `ERROR: ...` line at the end. With `claude` it is empty if everything went well. |
+| `<name>.json.done` | The original job, renamed when it finishes. |
+| `<name>.pid` | Only while the job runs: the PID of the CLI process (see [.pid file](#pid-file)). |
+| `.monitor-runner.lock` | Only while a monitor with `--run` is running: PID and runner data. Prevents a second one from starting. |
+| `ai-task-commander.pid` | Only while a monitor with `--run` is running: the monitor's PID, just the number on one line (like [`<name>.pid`](#pid-file)). Deleted on exit; if the monitor dies abruptly it stays, and the next `--run` overwrites it. That is why `ai-task-commander` is not a valid job name: an `ai-task-commander.json` shows up as `ERR` and is not run. |
 
-### Fitxer .status
+### .status file
 
-JSON en UTF-8, escrit de manera atòmica (fitxer temporal i reanomenat), així que qui el llegeix mai no en veu una versió a mitges:
+JSON in UTF-8, written atomically (temporary file and rename), so a reader never sees a half-written version:
 
 ```json
 {
-  "job": "revisio-v3",
+  "job": "review-v3",
   "state": "OK",
   "reason": "exit code 0",
   "exit_code": 0,
@@ -160,90 +163,90 @@ JSON en UTF-8, escrit de manera atòmica (fitxer temporal i reanomenat), així q
   "workdir": "C:\\Claude\\HomeAssistant",
   "host": "PC",
   "runner_pid": 6789,
-  "output": "revisio-v3.md",
-  "errors": "revisio-v3.err"
+  "output": "review-v3.md",
+  "errors": "review-v3.err"
 }
 ```
 
-| Camp | Valor |
+| Field | Value |
 |---|---|
-| `state` | `RUNNING` mentre la CLI treballa; `OK` o `ERR` quan acaba. |
-| `reason` | `exit code 0`, `exit code N`, `exit code 0 but <nom>.md was not written` o `cannot start the CLI: ...`. |
-| `exit_code` | Codi de sortida de la CLI (`null` mentre corre). `OK` vol dir codi `0` i `<nom>.md` escrit. |
-| `queued`, `start`, `stop` | Hores ISO 8601 amb zona: entrada a la cua (data del `.json`), inici i fi de la CLI. |
-| `duration_s` | Durada en segons. |
-| `pid`, `runner_pid`, `host` | PID de la CLI, PID del monitor que l'executa i nom de la màquina. |
-| `inferred` | Opcional. `true` en un `.status` generat després a partir dels fitxers (feines dels antics watchers): el monitor marca les hores com a aproximades. |
+| `state` | `RUNNING` while the CLI works; `OK` or `ERR` when it finishes. |
+| `reason` | `exit code 0`, `exit code N`, `exit code 0 but <name>.md was not written` or `cannot start the CLI: ...`. |
+| `exit_code` | The CLI's exit code (`null` while running). `OK` means code `0` and `<name>.md` written. |
+| `queued`, `start`, `stop` | ISO 8601 times with time zone: entry into the queue (date of the `.json`), start and end of the CLI. |
+| `duration_s` | Duration in seconds. |
+| `pid`, `runner_pid`, `host` | PID of the CLI, PID of the monitor running it, and machine name. |
+| `inferred` | Optional. `true` in a `.status` generated afterwards from the files (jobs from the old watchers): the monitor marks the times as approximate. |
 
-Ordre dels canvis: en començar s'escriu el `.status` (`RUNNING`) i el `.pid`; en acabar s'esborra el `.pid`, s'escriu el `.status` final i es reanomena el `.json` a `.json.done`. Per tant, si existeix `<nom>.json.done`, el `.status` ja és final.
+Order of changes: on start the `.status` (`RUNNING`) and the `.pid` are written; on finish the `.pid` is deleted, the final `.status` is written and the `.json` is renamed to `.json.done`. So if `<name>.json.done` exists, the `.status` is already final.
 
-Si es surt del monitor amb una feina en curs, la CLI s'atura, s'esborren el `.pid` i el `.status` i el `.json` queda pendent: es tornarà a executar en arrencar amb `--run --force`. Si el monitor mor de cop (finestra tancada, procés matat, apagada), el `.status` es queda a `RUNNING` i el `.json` pendent. La CLI s'executa desacoblada de la finestra i pot seguir treballant fins que acabi: mentre el seu `pid` existeixi, la feina surt com a `RUNNING` i un nou `--run` no arrenca; quan el procés ja no existeix, surt com a `QUEUED` amb l'avís `stale` i es tornarà a executar amb `--force`.
+If you quit the monitor with a job running, the CLI is stopped, the `.pid` and the `.status` are deleted and the `.json` stays pending: it will run again when starting with `--run --force`. If the monitor dies abruptly (window closed, process killed, power loss), the `.status` stays at `RUNNING` and the `.json` pending. The CLI runs detached from the window and may keep working until it finishes: while its `pid` exists, the job shows as `RUNNING` and a new `--run` won't start; once the process no longer exists, it shows as `QUEUED` with the `stale` warning and will run again with `--force`.
 
-#### Feines sense .status
+#### Jobs without .status
 
-Les feines acabades sense `.status` (fetes amb els antics watchers) també es mostren, però l'estat i les hores es dedueixen dels fitxers i surten marcats com a aproximats: amb `codex` és `OK` si hi ha `.md`; amb `claude`, si el `.md` té contingut, el `.err` és buit i el `.md` no és un missatge d'error curt de la CLI (comença per `API Error` o `Error:`). L'inici és la data de creació del `.err` (a Linux no està disponible) i la fi, l'última modificació del `.md` o el `.err`.
+Finished jobs without a `.status` (done with the old watchers) are also shown, but the state and times are inferred from the files and marked as approximate: with `codex` it is `OK` if there is a `.md`; with `claude`, if the `.md` has content, the `.err` is empty and the `.md` is not a short CLI error message (starting with `API Error` or `Error:`). The start is the creation date of the `.err` (not available on Linux) and the end, the last modification of the `.md` or the `.err`.
 
-### Fitxer .pid
+### .pid file
 
-Mentre la CLI treballa, `<nom>.pid` conté el seu PID: només el número, en una línia. És el PID del procés fill: a Windows, si la CLI és un `codex.cmd`/`claude.cmd` de npm, és el del `cmd.exe` que l'embolcalla, que viu tant com la CLI. Per comprovar si encara existeix:
+While the CLI works, `<name>.pid` holds its PID: just the number, on one line. It is the PID of the child process: on Windows, if the CLI is an npm `codex.cmd`/`claude.cmd`, it is that of the wrapping `cmd.exe`, which lives as long as the CLI. To check whether it still exists:
 
 ```powershell
-Get-Process -Id (Get-Content C:\Claude\HomeAssistant\gpt-queue\revisio-v3.pid) -ErrorAction SilentlyContinue
+Get-Process -Id (Get-Content C:\Claude\HomeAssistant\gpt-queue\review-v3.pid) -ErrorAction SilentlyContinue
 ```
 
 ```bash
-kill -0 "$(cat ~/Claude/HomeAssistant/gpt-queue/revisio-v3.pid)" 2>/dev/null && echo "en curs" || echo "el procés no existeix"
+kill -0 "$(cat ~/Claude/HomeAssistant/gpt-queue/review-v3.pid)" 2>/dev/null && echo "running" || echo "process does not exist"
 ```
 
-Els PID es reutilitzen: un `.pid` antic podria apuntar per casualitat a un altre procés. Si cal, comprova'n el nom (`Get-Process` el mostra; a Linux, `ps -o comm= -p <pid>`).
+PIDs are reused: an old `.pid` could by chance point to another process. If needed, check its name (`Get-Process` shows it; on Linux, `ps -o comm= -p <pid>`).
 
-## Ús des de Claude Code
+## Use from Claude Code
 
-1. Claude escriu un `<nom>.json` a la cua.
-2. Espera que `<nom>.status` digui `OK` o `ERR` (o que aparegui `<nom>.json.done`). Mentrestant, si `state` és `RUNNING` i el `pid` existeix, la CLI encara treballa.
-3. Si és `OK`, llegeix `<nom>.md`. Si és `ERR`, `reason` diu el motiu i el final de `<nom>.err` el detall.
+1. Claude writes a `<name>.json` to the queue.
+2. It waits for `<name>.status` to say `OK` or `ERR` (or for `<name>.json.done` to appear). Meanwhile, if `state` is `RUNNING` and the `pid` exists, the CLI is still working.
+3. If it is `OK`, it reads `<name>.md`. If it is `ERR`, `reason` gives the cause and the end of `<name>.err` the details.
 
-Si al cap d'uns 20 segons d'haver escrit el `.json` no hi ha `<nom>.status`, el runner no corre o ha rebutjat la feina (mira la pantalla del monitor). A les rutes de Windows dins del `prompt`, vigila les seqüències d'escapament (`\a`, `\b`, `\n`, `\t`...): una ruta com `gpt-queue\aitc-...` escrita en una cadena no literal acaba amb un caràcter de control en lloc de `\a`. Fer servir barres `/` a les rutes ho evita.
+If about 20 seconds after writing the `.json` there is no `<name>.status`, the runner is not running or has rejected the job (check the monitor screen). With Windows paths inside the `prompt`, watch out for escape sequences (`\a`, `\b`, `\n`, `\t`...): a path like `gpt-queue\aitc-...` written in a non-raw string ends up with a control character instead of `\a`. Using `/` slashes in paths avoids this.
 
-### Exemple d'instruccions a CLAUDE.md
+### Example CLAUDE.md instructions
 
-Per fer que Claude Code delegui feines a GPT de manera autònoma, afegeix una secció com aquesta al `CLAUDE.md` del projecte. Ajusta la ruta de la cua a la que faci servir el monitor.
+To have Claude Code delegate work to GPT autonomously, add a section like this to the project's `CLAUDE.md`. Adjust the queue path to the one the monitor uses.
 
 ````markdown
-## Delegar feines a GPT (codex) via la cua
+## Delegating work to GPT (codex) via the queue
 
-Quan et demani una segona opinió, una revisió o una anàlisi de GPT, delega-la
-a la cua de codex en comptes de respondre-la tu:
+When I ask for a second opinion, a review or an analysis from GPT, delegate it
+to the codex queue instead of answering it yourself:
 
-1. Escriu un fitxer de feina a `C:/Claude/HomeAssistant/gpt-queue/<nom>.json` amb
-   l'eina Write (així queda en UTF-8; `Set-Content` o `>` de PowerShell no ho
-   garanteixen). Fes servir un nom únic, per exemple `aitc-<tema>`. Contingut:
+1. Write a job file to `C:/Claude/HomeAssistant/gpt-queue/<name>.json` with
+   the Write tool (so it is UTF-8; PowerShell's `Set-Content` or `>` don't
+   guarantee it). Use a unique name, for example `aitc-<topic>`. Contents:
 
    ```json
    {
      "model": "gpt-5.5",
      "effort": "high",
-     "prompt": "Text de la petició"
+     "prompt": "Request text"
    }
    ```
 
-   El codex s'executa al directori de treball del runner, així que al `prompt`
-   pots referir-te als fitxers per ruta relativa. Si has de passar-li molt text
-   o dades, deixa-ho en un fitxer a part dins del directori de treball (mai un
-   altre `.json` a la cua) i esmenta la ruta al `prompt`.
+   codex runs in the runner's working directory, so in the `prompt` you can
+   refer to files by relative path. If you need to pass it a lot of text or
+   data, put it in a separate file inside the working directory (never another
+   `.json` in the queue) and mention the path in the `prompt`.
 
-2. Espera llegint `C:/Claude/HomeAssistant/gpt-queue/<nom>.status` (JSON):
+2. Wait by reading `C:/Claude/HomeAssistant/gpt-queue/<name>.status` (JSON):
 
-   - `"state": "RUNNING"` i el `pid` existeix (a PowerShell,
-     `Get-Process -Id <pid>` no dóna error): la feina és en curs, segueix
-     esperant sense límit de temps.
-   - `"state": "RUNNING"` però el `pid` no existeix: el runner ha mort a mig fer.
-     Atura't i avisa'm perquè el torni a arrencar amb `--run --force`.
-   - Al cap d'uns 20 segons encara no hi ha `<nom>.status`: atura't i avisa'm,
-     el runner no corre o ha rebutjat la feina.
+   - `"state": "RUNNING"` and the `pid` exists (in PowerShell,
+     `Get-Process -Id <pid>` doesn't error): the job is running, keep
+     waiting with no time limit.
+   - `"state": "RUNNING"` but the `pid` doesn't exist: the runner died mid-job.
+     Stop and tell me so I can restart it with `--run --force`.
+   - After about 20 seconds there is still no `<name>.status`: stop and tell me,
+     the runner is not running or has rejected the job.
 
-3. Quan `state` sigui `OK`, llegeix `<nom>.md`: és la resposta de GPT. Si és
-   `ERR`, digues-me el `reason` i la línia `ERROR:` del final de `<nom>.err`.
+3. When `state` is `OK`, read `<name>.md`: it is GPT's answer. If it is
+   `ERR`, tell me the `reason` and the `ERROR:` line at the end of `<name>.err`.
 ````
 
-Amb la cua `claude-queue` funciona igual, amb els valors de `model` i `effort` de Claude Code.
+The `claude-queue` queue works the same way, with Claude Code's `model` and `effort` values.
